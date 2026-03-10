@@ -88,7 +88,7 @@ stop_spinner() {
         kill "$SPINNER_PID" 2>/dev/null
         wait "$SPINNER_PID" 2>/dev/null || true
         SPINNER_PID=""
-        printf "\r\033[K" >&2  # clear line
+        printf "\r\033[K" >&2
     fi
 }
 
@@ -274,6 +274,7 @@ load_config() {
                 language)      [ -z "$LANGUAGE" ] && LANGUAGE="$value" ;;
                 conventional)  [ "$CONVENTIONAL" = false ] && CONVENTIONAL="$value" ;;
                 emoji)         [ "$EMOJI" = false ] && EMOJI="$value" ;;
+                skip_confirm)  [ "$SKIP_CONFIRM" = false ] && SKIP_CONFIRM="$value" ;;
             esac
         done < "$CONFIG_FILE"
     fi
@@ -302,6 +303,7 @@ auto_push=$AUTO_PUSH
 language=$LANGUAGE
 conventional=$CONVENTIONAL
 emoji=$EMOJI
+skip_confirm=$SKIP_CONFIRM
 EOF
     chmod 600 "$CONFIG_FILE"
     log_success "Configuration saved to $CONFIG_FILE"
@@ -397,6 +399,12 @@ run_setup() {
         EMOJI=false
     fi
 
+    if ask_yes_no "Skip confirmation prompts? (auto-accept all y/N prompts)"; then
+        SKIP_CONFIRM=true
+    else
+        SKIP_CONFIRM=false
+    fi
+
     LANGUAGE=$(prompt_input "Commit message language" "en")
 
     # Test connection
@@ -441,6 +449,7 @@ show_config() {
     printf "  %-16s %s\n" "Auto-push:" "$AUTO_PUSH"
     printf "  %-16s %s\n" "Conventional:" "$CONVENTIONAL"
     printf "  %-16s %s\n" "Emoji:" "$EMOJI"
+    printf "  %-16s %s\n" "Skip confirm:" "$SKIP_CONFIRM"
     echo -e "${CYAN}─────────────────────────────────────${NC}"
     printf "  %-16s %s\n" "Config file:" "$CONFIG_FILE"
     if [ -f "$CONFIG_FILE" ]; then

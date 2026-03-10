@@ -5,8 +5,6 @@
 
 AI-powered git automation: smart commits, conflict resolution, and auto-rebase. Pure Bash.
 
-Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).
-
 ## Features
 
 - **AI commit messages** — Generate meaningful commit messages (title + description) from your staged diff
@@ -147,6 +145,7 @@ auto_push=false
 language=en
 conventional=true
 emoji=false
+skip_confirm=false
 ```
 
 You can view your active configuration at any time with `git-pilot config`.
@@ -180,3 +179,7 @@ All default models are cheap/mini models — more than enough for generating com
 ## License
 
 [MIT](LICENSE)
+
+---
+
+Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).

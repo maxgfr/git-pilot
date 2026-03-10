@@ -63,6 +63,7 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "Provider:" || { echo "FAIL: missing Provider"; exit 1; }
           echo "$output" | grep -q "claude-code" || { echo "FAIL: default provider should be claude-code"; exit 1; }
+          echo "$output" | grep -q "Skip confirm:.*false" || { echo "FAIL: skip_confirm should default to false"; exit 1; }
           echo "$output" | grep -q "not created yet" || { echo "FAIL: should say config not created"; exit 1; }
 
       - name: "Test: config with existing config file"
@@ -70,13 +71,14 @@ jobs:
           CFG_DIR="$(mktemp -d)"
           export GIT_PILOT_CONFIG_DIR="$CFG_DIR"
           mkdir -p "$CFG_DIR"
-          printf 'provider=anthropic\nmodel=claude-haiku-4-5\napi_key=sk-ant-test1234567890abcdefghij\nauto_stage=true\nauto_push=false\nconventional=true\nemoji=false\nlanguage=fr\n' > "$CFG_DIR/config"
+          printf 'provider=anthropic\nmodel=claude-haiku-4-5\napi_key=sk-ant-test1234567890abcdefghij\nauto_stage=true\nauto_push=false\nconventional=true\nemoji=false\nskip_confirm=true\nlanguage=fr\n' > "$CFG_DIR/config"
           output=$(./script.sh config 2>&1)
           echo "$output"
           echo "$output" | grep -q "anthropic" || { echo "FAIL: provider not loaded"; exit 1; }
           echo "$output" | grep -q "claude-haiku-4-5" || { echo "FAIL: model not loaded"; exit 1; }
           echo "$output" | grep -q "sk-ant-t" || { echo "FAIL: masked API key not shown"; exit 1; }
           echo "$output" | grep -q "exists" || { echo "FAIL: should say config exists"; exit 1; }
+          echo "$output" | grep -q "Skip confirm:.*true" || { echo "FAIL: skip_confirm not loaded"; exit 1; }
 
       # ── Error handling ──
 
