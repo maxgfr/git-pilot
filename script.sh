@@ -49,11 +49,11 @@ fi
 # --- Helper Functions ---
 
 log_info() {
-    printf "${BLUE}[INFO]${NC} %s\n" "$1"
+    printf "${BLUE}[INFO]${NC} %s\n" "$1" >&2
 }
 
 log_success() {
-    printf "${GREEN}[OK]${NC} %s\n" "$1"
+    printf "${GREEN}[OK]${NC} %s\n" "$1" >&2
 }
 
 log_warn() {
@@ -464,12 +464,12 @@ call_ai_api() {
     start_spinner "$spinner_msg..."
 
     case "$PROVIDER" in
-        claude-code) response=$(call_claude_code "$prompt") ;;
-        codex)       response=$(call_codex_cli "$prompt") ;;
-        anthropic)   response=$(call_anthropic "$prompt") ;;
-        openai)      response=$(call_openai "$prompt" "$MODEL") ;;
-        gemini)      response=$(call_gemini "$prompt") ;;
-        mistral)     response=$(call_mistral "$prompt") ;;
+        claude-code) response=$(call_claude_code "$prompt") || { stop_spinner; exit 1; } ;;
+        codex)       response=$(call_codex_cli "$prompt")   || { stop_spinner; exit 1; } ;;
+        anthropic)   response=$(call_anthropic "$prompt")   || { stop_spinner; exit 1; } ;;
+        openai)      response=$(call_openai "$prompt" "$MODEL") || { stop_spinner; exit 1; } ;;
+        gemini)      response=$(call_gemini "$prompt")      || { stop_spinner; exit 1; } ;;
+        mistral)     response=$(call_mistral "$prompt")     || { stop_spinner; exit 1; } ;;
         *)
             stop_spinner
             log_error "Unknown provider: $PROVIDER"
@@ -478,6 +478,12 @@ call_ai_api() {
     esac
 
     stop_spinner
+
+    if [ -z "$response" ]; then
+        log_error "AI provider '$PROVIDER' returned empty response."
+        exit 1
+    fi
+
     echo "$response"
 }
 
