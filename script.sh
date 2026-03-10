@@ -64,6 +64,36 @@ log_error() {
     printf "${RED}[ERROR]${NC} %s\n" "$1" >&2
 }
 
+# Spinner for long-running operations
+SPINNER_PID=""
+
+start_spinner() {
+    local msg="$1"
+    if [ ! -t 1 ]; then return; fi
+    (
+        local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+        local i=0
+        while true; do
+            printf "\r${CYAN}%s${NC} %s" "${frames[$i]}" "$msg" >&2
+            i=$(( (i + 1) % ${#frames[@]} ))
+            sleep 0.1
+        done
+    ) &
+    SPINNER_PID=$!
+    disown "$SPINNER_PID" 2>/dev/null
+}
+
+stop_spinner() {
+    if [ -n "$SPINNER_PID" ]; then
+        kill "$SPINNER_PID" 2>/dev/null
+        wait "$SPINNER_PID" 2>/dev/null || true
+        SPINNER_PID=""
+        printf "\r\033[K" >&2  # clear line
+    fi
+}
+
+trap 'stop_spinner' EXIT
+
 print_banner() {
     echo -e "${CYAN}"
     echo "   ██████╗ ██╗████████╗      ██████╗ ██╗██╗      ██████╗ ████████╗"
@@ -277,8 +307,8 @@ EOF
 get_default_model() {
     local p="$1"
     case "$p" in
-        claude-code) echo "" ;;            # claude CLI uses its own model selection
-        codex)       echo "" ;;            # codex CLI uses its own model selection
+        claude-code) echo "haiku" ;;
+        codex)       echo "gpt-5-nano" ;;
         anthropic)   echo "claude-haiku-4-5" ;;
         openai)      echo "gpt-5-nano" ;;
         gemini)      echo "gemini-2.5-flash-lite" ;;
@@ -390,6 +420,10 @@ call_ai_api() {
     local prompt="$1"
     local response
 
+    local spinner_msg="Thinking"
+    [ -n "$MODEL" ] && spinner_msg="Thinking ($PROVIDER/$MODEL)"
+    start_spinner "$spinner_msg..."
+
     case "$PROVIDER" in
         claude-code) response=$(call_claude_code "$prompt") ;;
         codex)       response=$(call_codex_cli "$prompt") ;;
@@ -398,11 +432,13 @@ call_ai_api() {
         gemini)      response=$(call_gemini "$prompt") ;;
         mistral)     response=$(call_mistral "$prompt") ;;
         *)
+            stop_spinner
             log_error "Unknown provider: $PROVIDER"
             exit 1
             ;;
     esac
 
+    stop_spinner
     echo "$response"
 }
 
@@ -434,8 +470,14 @@ call_claude_code() {
 call_codex_cli() {
     local prompt="$1"
     local result
+    local model_flag=""
 
-    result=$(codex -q "$prompt" 2>/dev/null) || {
+    if [ -n "$MODEL" ]; then
+        model_flag="--model $MODEL"
+    fi
+
+    # shellcheck disable=SC2086
+    result=$(codex -q "$prompt" $model_flag 2>/dev/null) || {
         log_error "Codex CLI failed. Is 'codex' installed and authenticated?"
         exit 1
     }
