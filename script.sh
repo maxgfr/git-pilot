@@ -9,7 +9,7 @@
 set -e
 
 # --- Configuration & Defaults ---
-VERSION="1.7.1"
+VERSION="1.8.0"
 CONFIG_DIR="${GIT_PILOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/git-pilot}"
 CONFIG_FILE="$CONFIG_DIR/config"
 MAX_TOKENS=1024
