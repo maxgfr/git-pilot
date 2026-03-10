@@ -9,7 +9,7 @@
 set -e
 
 # --- Configuration & Defaults ---
-VERSION="1.1.0"
+VERSION="1.2.0"
 CONFIG_DIR="${GIT_PILOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/git-pilot}"
 CONFIG_FILE="$CONFIG_DIR/config"
 MAX_DIFF_CHARS=8000
