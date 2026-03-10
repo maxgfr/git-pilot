@@ -498,8 +498,9 @@ call_claude_code() {
         model_flag="--model $MODEL"
     fi
 
+    # Unset CLAUDECODE to allow running inside Claude Code sessions
     # shellcheck disable=SC2086
-    result=$(claude -p "$prompt" $model_flag 2>/dev/null) || {
+    result=$(unset CLAUDECODE; claude -p "$prompt" $model_flag 2>/dev/null) || {
         log_error "Claude Code CLI failed. Is 'claude' installed and authenticated?"
         exit 1
     }
@@ -826,7 +827,7 @@ generate_commit_message() {
     [ -n "$MODEL" ] && provider_label="$PROVIDER ($MODEL)"
     log_info "Generating commit message with $provider_label..."
     local message
-    message=$(call_ai_api "$prompt")
+    message=$(call_ai_api "$prompt") || return 1
 
     # Clean up: remove surrounding quotes/backticks if present
     message=$(echo "$message" | sed 's/^[`"'"'"']*//;s/[`"'"'"']*$//')
@@ -838,7 +839,12 @@ do_commit() {
     check_git_repo
 
     local message
-    message=$(generate_commit_message)
+    message=$(generate_commit_message) || exit 1
+
+    if [ -z "$message" ]; then
+        log_error "Failed to generate commit message."
+        exit 1
+    fi
 
     echo ""
     echo -e "${BOLD}Proposed commit message:${NC}"
@@ -895,7 +901,7 @@ Content:
 $content"
 
         local resolved
-        resolved=$(call_ai_api "$prompt")
+        resolved=$(call_ai_api "$prompt") || { log_error "Failed to resolve: $file"; continue; }
 
         if [ -n "$resolved" ] && [ "$resolved" != "null" ]; then
             echo ""
