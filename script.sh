@@ -115,10 +115,11 @@ print_usage() {
     echo "  resolve             Resolve merge conflicts with AI"
     echo "  rebase              Pull --rebase with AI conflict resolution"
     echo "  setup               Run interactive configuration wizard"
+    echo "  config              Show current configuration"
     echo ""
     echo "Options:"
     echo "  -p, --provider <name>    Provider: claude-code, codex, anthropic, openai, gemini, mistral"
-    echo "  -m, --model <name>       Model name (e.g. claude-haiku-4-5, gpt-5-nano)"
+    echo "  -m, --model <name>       Model name (e.g. claude-haiku-4-5, gpt-5-mini)"
     echo "      --api-key <key>      API key (for API providers: anthropic, openai, gemini, mistral)"
     echo "  -d, --dry-run            Preview commit message without committing"
     echo "  -a, --auto-stage         Stage all changes before commit"
@@ -308,9 +309,9 @@ get_default_model() {
     local p="$1"
     case "$p" in
         claude-code) echo "haiku" ;;
-        codex)       echo "gpt-5-nano" ;;
+        codex)       echo "gpt-5-mini" ;;
         anthropic)   echo "claude-haiku-4-5" ;;
-        openai)      echo "gpt-5-nano" ;;
+        openai)      echo "gpt-5-mini" ;;
         gemini)      echo "gemini-2.5-flash-lite" ;;
         mistral)     echo "mistral-small-latest" ;;
         *)           echo "" ;;
@@ -410,6 +411,42 @@ run_setup() {
     save_config
     echo ""
     log_success "Setup complete! Run 'git-pilot' in any git repo to start."
+}
+
+show_config() {
+    load_config
+
+    # Apply defaults for display
+    local p="${PROVIDER:-claude-code}"
+    local m="${MODEL:-$(get_default_model "$p")}"
+    local l="${LANGUAGE:-en}"
+
+    echo ""
+    echo -e "${BOLD}git-pilot configuration${NC}"
+    echo -e "${CYAN}─────────────────────────────────────${NC}"
+    printf "  %-16s %s\n" "Provider:" "$p"
+    printf "  %-16s %s\n" "Model:" "${m:-<provider default>}"
+    if is_cli_provider "$p"; then
+        printf "  %-16s %s\n" "API key:" "(not needed — CLI provider)"
+    elif [ -n "$API_KEY" ]; then
+        printf "  %-16s %s\n" "API key:" "${API_KEY:0:8}...${API_KEY: -4}"
+    else
+        printf "  %-16s %s\n" "API key:" "(not set)"
+    fi
+    printf "  %-16s %s\n" "Max tokens:" "$MAX_TOKENS"
+    printf "  %-16s %s\n" "Language:" "$l"
+    printf "  %-16s %s\n" "Auto-stage:" "$AUTO_STAGE"
+    printf "  %-16s %s\n" "Auto-push:" "$AUTO_PUSH"
+    printf "  %-16s %s\n" "Conventional:" "$CONVENTIONAL"
+    printf "  %-16s %s\n" "Emoji:" "$EMOJI"
+    echo -e "${CYAN}─────────────────────────────────────${NC}"
+    printf "  %-16s %s\n" "Config file:" "$CONFIG_FILE"
+    if [ -f "$CONFIG_FILE" ]; then
+        printf "  %-16s %s\n" "Status:" "exists"
+    else
+        printf "  %-16s %s\n" "Status:" "not created yet (run 'git-pilot setup')"
+    fi
+    echo ""
 }
 
 # ==============================================================================
@@ -945,7 +982,7 @@ do_pull_rebase() {
 # Check for command as first argument
 if [ $# -gt 0 ]; then
     case "$1" in
-        setup|commit|resolve|rebase)
+        setup|config|commit|resolve|rebase)
             ACTION="$1"
             shift
             ;;
@@ -1028,9 +1065,14 @@ done
 #  Main Flow
 # ==============================================================================
 
-# Setup doesn't need git repo or API config
+# Setup and config don't need git repo or full API config
 if [ "$ACTION" = "setup" ]; then
     run_setup
+    exit 0
+fi
+
+if [ "$ACTION" = "config" ]; then
+    show_config
     exit 0
 fi
 

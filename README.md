@@ -12,7 +12,7 @@ Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).
 - **AI commit messages** — Generate meaningful commit messages (title + description) from your staged diff
 - **Multi-provider** — Claude Code & Codex (CLI), Anthropic, OpenAI, Gemini & Mistral (API)
 - **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
-- **Budget-friendly defaults** — Uses the cheapest models by default (`gpt-5-nano`, `claude-haiku-4-5`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
+- **Budget-friendly defaults** — Uses the cheapest models by default (`gpt-5-mini`, `claude-haiku-4-5`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
 - **Conflict resolution** — AI-powered merge conflict resolution
 - **Auto-rebase** — `pull --rebase` with automatic conflict resolution
 - **Conventional Commits** — Optional formatting with `--conventional`
@@ -74,13 +74,14 @@ git-pilot [command] [options]
 | `resolve` | Resolve merge conflicts with AI            |
 | `rebase`  | Pull --rebase with AI conflict resolution  |
 | `setup`   | Run interactive configuration wizard       |
+| `config`  | Show current configuration                 |
 
 ### Options
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral` |
-| `--model <name>` | `-m` | Model name (e.g. `claude-haiku-4-5`, `gpt-5-nano`) |
+| `--model <name>` | `-m` | Model name (e.g. `claude-haiku-4-5`, `gpt-5-mini`) |
 | `--api-key <key>` | | API key (for API providers: anthropic, openai, gemini, mistral) |
 | `--dry-run` | `-d` | Preview commit message without committing |
 | `--auto-stage` | `-a` | Stage all changes before commit |
@@ -164,7 +165,7 @@ CLI providers (`claude-code`, `codex`) don't need API keys — they use their ow
 | `claude-code` | CLI | *(uses claude default)* | Free (uses your Claude subscription) |
 | `codex` | CLI | *(uses codex default)* | Free (uses your OpenAI auth) |
 | `anthropic` | API | `claude-haiku-4-5` | ~$1.00/M input tokens |
-| `openai` | API | `gpt-5-nano` | ~$0.05/M input tokens |
+| `openai` | API | `gpt-5-mini` | ~$0.05/M input tokens |
 | `gemini` | API | `gemini-2.5-flash-lite` | ~$0.075/M input tokens |
 | `mistral` | API | `mistral-small-latest` | ~$0.06/M input tokens |
 
