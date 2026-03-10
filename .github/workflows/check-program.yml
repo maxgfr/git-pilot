@@ -80,6 +80,23 @@ jobs:
           echo "$output" | grep -q "exists" || { echo "FAIL: should say config exists"; exit 1; }
           echo "$output" | grep -q "Skip confirm:.*true" || { echo "FAIL: skip_confirm not loaded"; exit 1; }
 
+      - name: "Test: config file without trailing newline reads all values"
+        run: |
+          CFG_DIR="$(mktemp -d)"
+          export GIT_PILOT_CONFIG_DIR="$CFG_DIR"
+          mkdir -p "$CFG_DIR"
+          # printf without trailing \n to simulate a file with no final newline
+          printf 'provider=claude-code\nauto_stage=true\nskip_confirm=true' > "$CFG_DIR/config"
+          output=$(./script.sh config 2>&1)
+          echo "$output"
+          echo "$output" | grep -q "Skip confirm:.*true" || { echo "FAIL: last line without newline not read"; exit 1; }
+          echo "$output" | grep -q "Auto-stage:.*true" || { echo "FAIL: auto_stage not loaded"; exit 1; }
+
+      - name: "Test: spinner writes to stderr and starts inside subshell"
+        run: |
+          # Verify the spinner TTY check uses fd 2 (stderr), not fd 1 (stdout)
+          grep -q '\[ ! -t 2 \]' ./script.sh || { echo "FAIL: spinner should check stderr (fd 2) for TTY"; exit 1; }
+
       # ── Error handling ──
 
       - name: "Test: unknown argument exits with error"

@@ -69,7 +69,7 @@ SPINNER_PID=""
 
 start_spinner() {
     local msg="$1"
-    if [ ! -t 1 ]; then return; fi
+    if [ ! -t 2 ]; then return; fi
     (
         local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
         local i=0
@@ -258,7 +258,7 @@ require_command() {
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
-        while IFS='=' read -r key value; do
+        while IFS='=' read -r key value || [ -n "$key" ]; do
             # Skip comments and empty lines
             [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
             # Trim whitespace
