@@ -12,7 +12,6 @@ set -e
 VERSION="1.2.0"
 CONFIG_DIR="${GIT_PILOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/git-pilot}"
 CONFIG_FILE="$CONFIG_DIR/config"
-MAX_DIFF_CHARS=8000
 MAX_TOKENS=1024
 
 # --- Runtime state (overridable by CLI flags) ---
@@ -616,19 +615,89 @@ get_staged_diff() {
     echo "$diff"
 }
 
+get_diff_budget() {
+    # Returns max chars budget based on provider cost
+    # Cheap providers get more context, expensive ones get less
+    case "$PROVIDER" in
+        claude-code|codex)  echo 16000 ;;  # CLI — no per-token cost
+        openai)             echo 12000 ;;  # gpt-5-nano: $0.05/M — very cheap
+        gemini)             echo 12000 ;;  # flash-lite: $0.075/M — very cheap
+        mistral)            echo 12000 ;;  # small: $0.06/M — very cheap
+        anthropic)          echo 6000 ;;   # haiku: $1.00/M — 15x pricier
+        *)                  echo 8000 ;;
+    esac
+}
+
 truncate_diff() {
     local diff="$1"
+    local budget
+    budget=$(get_diff_budget)
     local length=${#diff}
 
-    if [ "$length" -gt "$MAX_DIFF_CHARS" ]; then
-        local stat
-        stat=$(git diff --cached --stat)
-        local truncated
-        truncated="${diff:0:$MAX_DIFF_CHARS}"
-        echo "${truncated}"$'\n\n'"[... diff truncated at ${MAX_DIFF_CHARS} chars — ${length} total]"$'\n\n'"Full stat:"$'\n'"${stat}"
-    else
+    # Fits in budget — send as-is
+    if [ "$length" -le "$budget" ]; then
         echo "$diff"
+        return
     fi
+
+    # Smart truncation: stat overview + fit as many complete file diffs as possible
+    local stat
+    stat=$(git diff --cached --stat)
+    local header="Changes overview:"$'\n'"${stat}"$'\n\n'"File diffs (most relevant):"$'\n'
+    local footer=$'\n\n'"[... ${length} chars total, truncated to fit budget]"
+    local available=$((budget - ${#header} - ${#footer}))
+
+    # Split diff by file (each starts with "diff --git"), collect into temp files
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local idx=0
+    local current_file=""
+
+    while IFS= read -r line; do
+        if [[ "$line" == "diff --git"* ]]; then
+            if [ -n "$current_file" ]; then
+                printf '%s' "$current_file" > "$tmpdir/$idx"
+                idx=$((idx + 1))
+            fi
+            current_file="$line"$'\n'
+        else
+            current_file="${current_file}${line}"$'\n'
+        fi
+    done <<< "$diff"
+    if [ -n "$current_file" ]; then
+        printf '%s' "$current_file" > "$tmpdir/$idx"
+    fi
+
+    # Sort file chunks by size (smallest first = most info per char)
+    local result=""
+    local used=0
+    local skipped=0
+
+    while IFS= read -r chunk_file; do
+        local chunk
+        chunk=$(cat "$chunk_file")
+        local chunk_len=${#chunk}
+        if [ $((used + chunk_len)) -le "$available" ]; then
+            result="${result}${chunk}"
+            used=$((used + chunk_len))
+        else
+            skipped=$((skipped + 1))
+        fi
+    done < <(find "$tmpdir" -type f -exec wc -c {} + | grep -v total | sort -n | awk '{print $2}')
+
+    # If we got nothing (single huge file), fall back to raw truncation
+    if [ -z "$result" ]; then
+        result="${diff:0:$available}"
+        skipped=1
+    fi
+
+    if [ "$skipped" -gt 0 ]; then
+        footer=$'\n\n'"[... ${skipped} large file(s) omitted — ${length} chars total]"
+    fi
+
+    echo "${header}${result}${footer}"
 }
 
 build_commit_prompt() {
