@@ -41,7 +41,7 @@ jobs:
       - name: Test --version
         run: ./script.sh --version
 
-      - name: Test config creation in a git repo
+      - name: Test config command in a git repo
         run: |
           cd "$(mktemp -d)"
           git init
@@ -53,3 +53,4 @@ jobs:
 
           export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
           "$GITHUB_WORKSPACE/script.sh" --version
+          "$GITHUB_WORKSPACE/script.sh" config
