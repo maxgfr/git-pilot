@@ -815,7 +815,7 @@ $diff"
 
 generate_commit_message() {
     local diff
-    diff=$(get_staged_diff)
+    diff=$(get_staged_diff) || return 1
 
     local truncated_diff
     truncated_diff=$(truncate_diff "$diff")
