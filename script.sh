@@ -123,7 +123,7 @@ print_usage() {
     echo "      --api-key <key>      API key (for API providers: anthropic, openai, gemini, mistral)"
     echo "  -d, --dry-run            Preview commit message without committing"
     echo "  -a, --auto-stage         Stage all changes before commit"
-    echo "      --auto-push          Push after commit"
+    echo "  -P, --auto-push          Push after commit"
     echo "  -c, --conventional       Use Conventional Commits format"
     echo "  -e, --emoji              Add emoji to commit message"
     echo "  -l, --lang <code>        Language for commit message (e.g. en, fr, es)"
@@ -1012,7 +1012,7 @@ while [[ $# -gt 0 ]]; do
             AUTO_STAGE=true
             shift
             ;;
-        --auto-push)
+        --auto-push|-P)
             AUTO_PUSH=true
             shift
             ;;

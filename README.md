@@ -85,7 +85,7 @@ git-pilot [command] [options]
 | `--api-key <key>` | | API key (for API providers: anthropic, openai, gemini, mistral) |
 | `--dry-run` | `-d` | Preview commit message without committing |
 | `--auto-stage` | `-a` | Stage all changes before commit |
-| `--auto-push` | | Push after commit |
+| `--auto-push` | `-P` | Push after commit |
 | `--conventional` | `-c` | Use Conventional Commits format |
 | `--emoji` | `-e` | Add emoji to commit message |
 | `--lang <code>` | `-l` | Language for commit message (e.g. `en`, `fr`, `es`) |
