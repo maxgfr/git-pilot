@@ -616,16 +616,9 @@ get_staged_diff() {
 }
 
 get_diff_budget() {
-    # Returns max chars budget based on provider cost
-    # Cheap providers get more context, expensive ones get less
-    case "$PROVIDER" in
-        claude-code|codex)  echo 16000 ;;  # CLI — no per-token cost
-        openai)             echo 12000 ;;  # gpt-5-nano: $0.05/M — very cheap
-        gemini)             echo 12000 ;;  # flash-lite: $0.075/M — very cheap
-        mistral)            echo 12000 ;;  # small: $0.06/M — very cheap
-        anthropic)          echo 6000 ;;   # haiku: $1.00/M — 15x pricier
-        *)                  echo 8000 ;;
-    esac
+    # Max chars budget for diff context sent to the AI
+    # 16K chars ≈ ~4K tokens — costs < $0.01 even on the priciest provider
+    echo 16000
 }
 
 truncate_diff() {
