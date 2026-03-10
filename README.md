@@ -180,6 +180,3 @@ All default models are cheap/mini models — more than enough for generating com
 ## License
 
 [MIT](LICENSE)
-
-test
-
