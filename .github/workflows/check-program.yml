@@ -70,16 +70,7 @@ jobs:
           CFG_DIR="$(mktemp -d)"
           export GIT_PILOT_CONFIG_DIR="$CFG_DIR"
           mkdir -p "$CFG_DIR"
-          cat > "$CFG_DIR/config" <<'CONF'
-          provider=anthropic
-          model=claude-haiku-4-5
-          api_key=sk-ant-test1234567890abcdefghij
-          auto_stage=true
-          auto_push=false
-          conventional=true
-          emoji=false
-          language=fr
-          CONF
+          printf 'provider=anthropic\nmodel=claude-haiku-4-5\napi_key=sk-ant-test1234567890abcdefghij\nauto_stage=true\nauto_push=false\nconventional=true\nemoji=false\nlanguage=fr\n' > "$CFG_DIR/config"
           output=$(./script.sh config 2>&1)
           echo "$output"
           echo "$output" | grep -q "anthropic" || { echo "FAIL: provider not loaded"; exit 1; }
@@ -116,12 +107,12 @@ jobs:
           touch init.txt && git add init.txt && git commit -m "init"
 
           export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
-          # No staged changes — should fail
-          if "$GITHUB_WORKSPACE/script.sh" 2>&1; then
+          # Use API provider to avoid requiring claude CLI
+          if "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1; then
             echo "FAIL: should have exited with error"
             exit 1
           fi
-          output=$("$GITHUB_WORKSPACE/script.sh" 2>&1 || true)
+          output=$("$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true)
           echo "$output" | grep -qi "no staged changes" || { echo "FAIL: wrong error message"; exit 1; }
 
       - name: "Test: API provider without API key exits with error"
@@ -239,7 +230,8 @@ jobs:
           touch init.txt && git add init.txt && git commit -m "init"
 
           export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
-          output=$("$GITHUB_WORKSPACE/script.sh" resolve 2>&1)
+          # Use API provider to avoid requiring claude CLI
+          output=$("$GITHUB_WORKSPACE/script.sh" resolve -p anthropic --api-key "fake" 2>&1)
           echo "$output"
           echo "$output" | grep -qi "no merge conflicts" || { echo "FAIL: should say no conflicts"; exit 1; }
 
@@ -309,9 +301,7 @@ jobs:
           for pair in "claude-code:haiku" "codex:gpt-5-mini" "anthropic:claude-haiku-4-5" "openai:gpt-5-mini" "gemini:gemini-2.5-flash-lite" "mistral:mistral-small-latest"; do
             provider="${pair%%:*}"
             expected_model="${pair##*:}"
-            cat > "$GIT_PILOT_CONFIG_DIR/config" <<CONF
-          provider=$provider
-          CONF
+            echo "provider=$provider" > "$GIT_PILOT_CONFIG_DIR/config"
             output=$(./script.sh config 2>&1)
             echo "Provider: $provider -> $(echo "$output" | grep "Model:")"
             echo "$output" | grep -q "$expected_model" || { echo "FAIL: $provider default model should be $expected_model"; exit 1; }

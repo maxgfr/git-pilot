@@ -1108,9 +1108,14 @@ if [ -z "$LANGUAGE" ]; then
     LANGUAGE="en"
 fi
 
-# Check dependencies
+# Check we're in a git repo first (before dependency checks)
 require_command git
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log_error "Not inside a git repository."
+    exit 1
+fi
 
+# Check provider dependencies
 if is_cli_provider "$PROVIDER"; then
     # CLI-based: check the CLI tool is installed
     case "$PROVIDER" in
