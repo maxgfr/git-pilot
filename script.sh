@@ -3,7 +3,7 @@
 # ==============================================================================
 #  git-pilot
 #  AI-powered git automation: smart commits, conflict resolution, and auto-rebase
-#  Supports Claude Code, OpenAI, Gemini, Mistral, Codex (CLI-based)
+#  Supports Claude Code, Codex (CLI), Anthropic, OpenAI, Gemini, Mistral (API)
 # ==============================================================================
 
 set -e
@@ -88,9 +88,9 @@ print_usage() {
     echo "  setup               Run interactive configuration wizard"
     echo ""
     echo "Options:"
-    echo "  -p, --provider <name>    Provider: claude-code, openai, gemini, mistral, codex"
-    echo "  -m, --model <name>       Model name (e.g. sonnet, gpt-4o) — for API providers"
-    echo "      --api-key <key>      API key (for API providers: openai, gemini, mistral)"
+    echo "  -p, --provider <name>    Provider: claude-code, codex, anthropic, openai, gemini, mistral"
+    echo "  -m, --model <name>       Model name (e.g. claude-haiku-4-5, gpt-5-nano)"
+    echo "      --api-key <key>      API key (for API providers: anthropic, openai, gemini, mistral)"
     echo "  -d, --dry-run            Preview commit message without committing"
     echo "  -a, --auto-stage         Stage all changes before commit"
     echo "      --auto-push          Push after commit"
@@ -108,7 +108,8 @@ print_usage() {
     echo "  git-pilot resolve                  # Resolve merge conflicts"
     echo "  git-pilot rebase                   # Pull --rebase with AI"
     echo "  git-pilot setup                    # Configure provider & preferences"
-    echo "  git-pilot -p openai -m gpt-4o      # Use specific API provider/model"
+    echo "  git-pilot -p anthropic              # Use Anthropic API (claude-haiku-4-5)"
+    echo "  git-pilot -p openai -m gpt-5-mini  # Use specific API provider/model"
     echo "  git-pilot -p codex                 # Use OpenAI Codex CLI"
 }
 
@@ -248,6 +249,7 @@ load_config() {
     # Env var fallbacks for API key (only for API-based providers)
     if [ -z "$API_KEY" ]; then
         case "$PROVIDER" in
+            anthropic)  API_KEY="${ANTHROPIC_API_KEY:-}" ;;
             openai)     API_KEY="${OPENAI_API_KEY:-}" ;;
             gemini)     API_KEY="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}" ;;
             mistral)    API_KEY="${MISTRAL_API_KEY:-}" ;;
@@ -276,11 +278,12 @@ EOF
 get_default_model() {
     local p="$1"
     case "$p" in
-        claude-code) echo "" ;;  # claude CLI uses its own model selection
-        openai)      echo "gpt-4o" ;;
-        gemini)      echo "gemini-2.0-flash" ;;
-        mistral)     echo "mistral-large-latest" ;;
-        codex)       echo "" ;;  # codex CLI uses its own model selection
+        claude-code) echo "" ;;            # claude CLI uses its own model selection
+        codex)       echo "" ;;            # codex CLI uses its own model selection
+        anthropic)   echo "claude-haiku-4-5" ;;
+        openai)      echo "gpt-5-nano" ;;
+        gemini)      echo "gemini-2.5-flash-lite" ;;
+        mistral)     echo "mistral-small-latest" ;;
         *)           echo "" ;;
     esac
 }
@@ -304,7 +307,7 @@ run_setup() {
     echo ""
 
     # Provider
-    PROVIDER=$(prompt_select "Choose your AI provider:" "claude-code" "codex" "openai" "gemini" "mistral")
+    PROVIDER=$(prompt_select "Choose your AI provider:" "claude-code" "codex" "anthropic" "openai" "gemini" "mistral")
     log_info "Provider: $PROVIDER"
 
     if is_cli_provider "$PROVIDER"; then
@@ -391,6 +394,7 @@ call_ai_api() {
     case "$PROVIDER" in
         claude-code) response=$(call_claude_code "$prompt") ;;
         codex)       response=$(call_codex_cli "$prompt") ;;
+        anthropic)   response=$(call_anthropic "$prompt") ;;
         openai)      response=$(call_openai "$prompt" "$MODEL") ;;
         gemini)      response=$(call_gemini "$prompt") ;;
         mistral)     response=$(call_mistral "$prompt") ;;
@@ -446,6 +450,42 @@ call_codex_cli() {
 }
 
 # --- API-based providers ---
+
+call_anthropic() {
+    local prompt="$1"
+    local body
+    body=$(jq -n \
+        --arg model "$MODEL" \
+        --argjson max_tokens "$MAX_TOKENS" \
+        --arg prompt "$prompt" \
+        '{
+            model: $model,
+            max_tokens: $max_tokens,
+            messages: [{ role: "user", content: $prompt }]
+        }')
+
+    local result
+    result=$(curl -s -w "\n%{http_code}" \
+        -H "Content-Type: application/json" \
+        -H "x-api-key: $API_KEY" \
+        -H "anthropic-version: 2023-06-01" \
+        -d "$body" \
+        "https://api.anthropic.com/v1/messages")
+
+    local http_code
+    http_code=$(echo "$result" | tail -n1)
+    local response_body
+    response_body=$(echo "$result" | sed '$d')
+
+    if [ "$http_code" -ne 200 ]; then
+        local error_msg
+        error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
+        log_error "Anthropic API error ($http_code): $error_msg"
+        exit 1
+    fi
+
+    echo "$response_body" | jq -r '.content[0].text'
+}
 
 call_openai() {
     local prompt="$1"
@@ -593,14 +633,14 @@ truncate_diff() {
 
 build_commit_prompt() {
     local diff="$1"
-    local prompt="You are a git commit message generator. Based on the following diff, write a single concise commit message."
+    local prompt="You are a git commit message generator. Based on the following diff, write a commit message with a title and a description."
 
     if [ "$CONVENTIONAL" = true ]; then
         prompt="$prompt Use Conventional Commits format (e.g. feat:, fix:, docs:, refactor:, chore:)."
     fi
 
     if [ "$EMOJI" = true ]; then
-        prompt="$prompt Include a relevant emoji at the start of the message."
+        prompt="$prompt Include a relevant emoji at the start of the title."
     fi
 
     if [ -n "$LANGUAGE" ] && [ "$LANGUAGE" != "en" ]; then
@@ -611,8 +651,10 @@ build_commit_prompt() {
 
 Rules:
 - Output ONLY the commit message, nothing else
-- First line: max 72 characters, imperative mood
-- If the change is complex, add a blank line then a brief body (max 3 lines)
+- Line 1: short summary title, max 72 characters, imperative mood
+- Line 2: blank
+- Lines 3+: description explaining WHAT changed and WHY (2-5 bullet points starting with -)
+- Keep each bullet concise (one line)
 - Do not wrap the message in quotes or backticks
 
 Diff:
@@ -921,7 +963,7 @@ else
     require_command jq
     if [ -z "$API_KEY" ]; then
         log_error "No API key configured for $PROVIDER. Run 'git-pilot setup' or set --api-key / environment variable."
-        log_info "Environment variables: OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY"
+        log_info "Environment variables: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY"
         exit 1
     fi
 fi

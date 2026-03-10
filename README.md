@@ -9,9 +9,10 @@ Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).
 
 ## Features
 
-- **AI commit messages** — Generate meaningful commit messages from your staged diff
-- **Multi-provider** — Claude Code & Codex (CLI), OpenAI, Gemini & Mistral (API)
+- **AI commit messages** — Generate meaningful commit messages (title + description) from your staged diff
+- **Multi-provider** — Claude Code & Codex (CLI), Anthropic, OpenAI, Gemini & Mistral (API)
 - **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
+- **Budget-friendly defaults** — Uses the cheapest models by default (`gpt-5-nano`, `claude-haiku-4-5`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
 - **Conflict resolution** — AI-powered merge conflict resolution
 - **Auto-rebase** — `pull --rebase` with automatic conflict resolution
 - **Conventional Commits** — Optional formatting with `--conventional`
@@ -78,9 +79,9 @@ git-pilot [command] [options]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `openai`, `gemini`, `mistral` |
-| `--model <name>` | `-m` | Model name (for API providers, e.g. `gpt-4o`) |
-| `--api-key <key>` | | API key (for API providers: openai, gemini, mistral) |
+| `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral` |
+| `--model <name>` | `-m` | Model name (e.g. `claude-haiku-4-5`, `gpt-5-nano`) |
+| `--api-key <key>` | | API key (for API providers: anthropic, openai, gemini, mistral) |
 | `--dry-run` | `-d` | Preview commit message without committing |
 | `--auto-stage` | `-a` | Stage all changes before commit |
 | `--auto-push` | | Push after commit |
@@ -107,8 +108,11 @@ git-pilot -d
 # Use Codex CLI
 git-pilot -p codex
 
-# Use an API provider
-git-pilot -p openai -m gpt-4o
+# Use Anthropic API
+git-pilot -p anthropic
+
+# Use OpenAI API with a specific model
+git-pilot -p openai -m gpt-5-mini
 
 # Commit in French
 git-pilot -l fr
@@ -146,6 +150,7 @@ API keys can be provided via environment variables (fallback for API providers):
 
 | Provider  | Environment Variable |
 |-----------|---------------------|
+| Anthropic | `ANTHROPIC_API_KEY`  |
 | OpenAI    | `OPENAI_API_KEY`     |
 | Gemini    | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | Mistral   | `MISTRAL_API_KEY`    |
@@ -154,13 +159,16 @@ CLI providers (`claude-code`, `codex`) don't need API keys — they use their ow
 
 ## Supported Providers
 
-| Provider | Type | Default Model | How it works |
-|----------|------|---------------|--------------|
-| `claude-code` | CLI | *(uses claude default)* | Calls `claude -p` directly |
-| `codex` | CLI | *(uses codex default)* | Calls `codex -q` directly |
-| `openai` | API | `gpt-4o` | `api.openai.com/v1/chat/completions` |
-| `gemini` | API | `gemini-2.0-flash` | `generativelanguage.googleapis.com/v1beta/...` |
-| `mistral` | API | `mistral-large-latest` | `api.mistral.ai/v1/chat/completions` |
+| Provider | Type | Default Model | Cost |
+|----------|------|---------------|------|
+| `claude-code` | CLI | *(uses claude default)* | Free (uses your Claude subscription) |
+| `codex` | CLI | *(uses codex default)* | Free (uses your OpenAI auth) |
+| `anthropic` | API | `claude-haiku-4-5` | ~$1.00/M input tokens |
+| `openai` | API | `gpt-5-nano` | ~$0.05/M input tokens |
+| `gemini` | API | `gemini-2.5-flash-lite` | ~$0.075/M input tokens |
+| `mistral` | API | `mistral-small-latest` | ~$0.06/M input tokens |
+
+All default models are the cheapest available for each provider — more than enough for generating commit messages.
 
 ## License
 
