@@ -1,0 +1,55 @@
+name: Check Program
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: "."
+          additional_files: "script.sh"
+
+  test:
+    name: Basic Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Make script executable
+        run: chmod +x script.sh
+
+      - name: Test --help
+        run: ./script.sh --help
+
+      - name: Test --version
+        run: ./script.sh --version
+
+      - name: Test config creation in a git repo
+        run: |
+          cd "$(mktemp -d)"
+          git init
+          git config user.email "test@test.com"
+          git config user.name "Test"
+          touch test.txt
+          git add test.txt
+          git commit -m "init"
+
+          export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
+          "$GITHUB_WORKSPACE/script.sh" --version
