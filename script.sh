@@ -25,7 +25,7 @@ CONVENTIONAL=false
 EMOJI=false
 LANGUAGE=""
 SKIP_CONFIRM=false
-ACTION="commit"  # commit | setup | resolve | rebase
+ACTION="commit"  # commit | setup | config | resolve | rebase
 
 # --- Colors ---
 if [ -t 1 ]; then

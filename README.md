@@ -12,7 +12,8 @@ Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).
 - **AI commit messages** — Generate meaningful commit messages (title + description) from your staged diff
 - **Multi-provider** — Claude Code & Codex (CLI), Anthropic, OpenAI, Gemini & Mistral (API)
 - **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
-- **Budget-friendly defaults** — Uses the cheapest models by default (`gpt-5-mini`, `claude-haiku-4-5`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
+- **Budget-friendly defaults** — Uses cheap/mini models by default (`haiku`, `gpt-5-mini`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
+- **Smart diff truncation** — Prioritizes small file diffs to maximize info sent to the AI (16K chars budget)
 - **Conflict resolution** — AI-powered merge conflict resolution
 - **Auto-rebase** — `pull --rebase` with automatic conflict resolution
 - **Conventional Commits** — Optional formatting with `--conventional`
@@ -68,20 +69,20 @@ git-pilot [command] [options]
 
 ### Commands
 
-| Command   | Description                                |
-|-----------|--------------------------------------------|
-| `commit`  | Generate AI commit message and commit (default) |
-| `resolve` | Resolve merge conflicts with AI            |
-| `rebase`  | Pull --rebase with AI conflict resolution  |
-| `setup`   | Run interactive configuration wizard       |
-| `config`  | Show current configuration                 |
+| Command   | Description                                    |
+|-----------|------------------------------------------------|
+| `commit`  | Generate AI commit message and commit (default)|
+| `resolve` | Resolve merge conflicts with AI                |
+| `rebase`  | Pull --rebase with AI conflict resolution      |
+| `setup`   | Run interactive configuration wizard           |
+| `config`  | Show current configuration                     |
 
 ### Options
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral` |
-| `--model <name>` | `-m` | Model name (e.g. `claude-haiku-4-5`, `gpt-5-mini`) |
+| `--model <name>` | `-m` | Model name (e.g. `haiku`, `gpt-5-mini`, `claude-haiku-4-5`) |
 | `--api-key <key>` | | API key (for API providers: anthropic, openai, gemini, mistral) |
 | `--dry-run` | `-d` | Preview commit message without committing |
 | `--auto-stage` | `-a` | Stage all changes before commit |
@@ -96,7 +97,7 @@ git-pilot [command] [options]
 ## Examples
 
 ```bash
-# Basic commit with Claude Code (default)
+# Basic commit with Claude Code (default, uses haiku)
 git add .
 git-pilot
 
@@ -124,8 +125,11 @@ git-pilot resolve
 # Pull --rebase with AI conflict resolution
 git-pilot rebase
 
-# Non-interactive mode
-git-pilot -a -y --auto-push
+# Show current config
+git-pilot config
+
+# Non-interactive mode (auto-stage + skip confirm + push)
+git-pilot -a -y -P
 ```
 
 ## Configuration
@@ -136,7 +140,7 @@ Configuration is stored at `~/.config/git-pilot/config` (XDG-compliant) with `ch
 # git-pilot configuration
 provider=claude-code
 api_key=
-model=
+model=haiku
 max_tokens=1024
 auto_stage=false
 auto_push=false
@@ -144,6 +148,8 @@ language=en
 conventional=true
 emoji=false
 ```
+
+You can view your active configuration at any time with `git-pilot config`.
 
 ### Environment Variables
 
@@ -162,14 +168,14 @@ CLI providers (`claude-code`, `codex`) don't need API keys — they use their ow
 
 | Provider | Type | Default Model | Cost |
 |----------|------|---------------|------|
-| `claude-code` | CLI | *(uses claude default)* | Free (uses your Claude subscription) |
-| `codex` | CLI | *(uses codex default)* | Free (uses your OpenAI auth) |
+| `claude-code` | CLI | `haiku` | Free (uses your Claude subscription) |
+| `codex` | CLI | `gpt-5-mini` | Free (uses your OpenAI auth) |
 | `anthropic` | API | `claude-haiku-4-5` | ~$1.00/M input tokens |
-| `openai` | API | `gpt-5-mini` | ~$0.05/M input tokens |
+| `openai` | API | `gpt-5-mini` | ~$0.25/M input tokens |
 | `gemini` | API | `gemini-2.5-flash-lite` | ~$0.075/M input tokens |
 | `mistral` | API | `mistral-small-latest` | ~$0.06/M input tokens |
 
-All default models are the cheapest available for each provider — more than enough for generating commit messages.
+All default models are cheap/mini models — more than enough for generating commit messages.
 
 ## License
 
