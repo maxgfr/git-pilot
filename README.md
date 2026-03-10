@@ -10,14 +10,15 @@ Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).
 ## Features
 
 - **AI commit messages** — Generate meaningful commit messages from your staged diff
-- **Multi-provider** — Supports Anthropic, OpenAI, Gemini, Mistral, and Codex
+- **Multi-provider** — Claude Code & Codex (CLI), OpenAI, Gemini & Mistral (API)
+- **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
 - **Conflict resolution** — AI-powered merge conflict resolution
 - **Auto-rebase** — `pull --rebase` with automatic conflict resolution
 - **Conventional Commits** — Optional formatting with `--conventional`
 - **Emoji support** — Add emoji to commit messages with `--emoji`
 - **Multi-language** — Generate commit messages in any language
 - **Dry run** — Preview commit messages without committing
-- **Pure Bash** — Single script, no runtime dependencies beyond `curl`, `jq`, and `git`
+- **Pure Bash** — Single script, no heavy runtime dependencies
 
 ## Installation
 
@@ -35,16 +36,28 @@ chmod +x git-pilot
 sudo mv git-pilot /usr/local/bin/
 ```
 
+### Prerequisites
+
+For CLI providers (no API key needed):
+- **Claude Code**: Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` CLI)
+- **Codex**: Install [OpenAI Codex](https://github.com/openai/codex) (`codex` CLI)
+
+For API providers:
+- `curl` and `jq` (installed automatically if missing)
+- An API key for the chosen provider
+
 ## Quick Start
 
 ```bash
-# 1. Configure your provider and API key
+# 1. Configure your provider
 git-pilot setup
 
 # 2. Stage your changes and generate a commit
 git add .
 git-pilot
 ```
+
+With Claude Code (default), no API key is needed — just have `claude` installed.
 
 ## Usage
 
@@ -65,9 +78,9 @@ git-pilot [command] [options]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--provider <name>` | `-p` | Provider: `anthropic`, `openai`, `gemini`, `mistral`, `codex` |
-| `--model <name>` | `-m` | Model name (e.g. `claude-sonnet-4-20250514`, `gpt-4o`) |
-| `--api-key <key>` | | API key (overrides config) |
+| `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `openai`, `gemini`, `mistral` |
+| `--model <name>` | `-m` | Model name (for API providers, e.g. `gpt-4o`) |
+| `--api-key <key>` | | API key (for API providers: openai, gemini, mistral) |
 | `--dry-run` | `-d` | Preview commit message without committing |
 | `--auto-stage` | `-a` | Stage all changes before commit |
 | `--auto-push` | | Push after commit |
@@ -81,7 +94,7 @@ git-pilot [command] [options]
 ## Examples
 
 ```bash
-# Basic commit with AI message
+# Basic commit with Claude Code (default)
 git add .
 git-pilot
 
@@ -91,7 +104,10 @@ git-pilot -a -c -e
 # Dry run (preview only)
 git-pilot -d
 
-# Use a specific provider and model
+# Use Codex CLI
+git-pilot -p codex
+
+# Use an API provider
 git-pilot -p openai -m gpt-4o
 
 # Commit in French
@@ -113,9 +129,9 @@ Configuration is stored at `~/.config/git-pilot/config` (XDG-compliant) with `ch
 
 ```ini
 # git-pilot configuration
-provider=anthropic
-api_key=sk-ant-xxxx
-model=claude-sonnet-4-20250514
+provider=claude-code
+api_key=
+model=
 max_tokens=1024
 auto_stage=false
 auto_push=false
@@ -126,25 +142,25 @@ emoji=false
 
 ### Environment Variables
 
-API keys can also be provided via environment variables (fallback when not in config):
+API keys can be provided via environment variables (fallback for API providers):
 
 | Provider  | Environment Variable |
 |-----------|---------------------|
-| Anthropic | `ANTHROPIC_API_KEY`  |
 | OpenAI    | `OPENAI_API_KEY`     |
 | Gemini    | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | Mistral   | `MISTRAL_API_KEY`    |
-| Codex     | `OPENAI_API_KEY`     |
+
+CLI providers (`claude-code`, `codex`) don't need API keys — they use their own authentication.
 
 ## Supported Providers
 
-| Provider  | Default Model              | Endpoint |
-|-----------|---------------------------|----------|
-| Anthropic | `claude-sonnet-4-20250514`     | `api.anthropic.com/v1/messages` |
-| OpenAI    | `gpt-4o`                  | `api.openai.com/v1/chat/completions` |
-| Gemini    | `gemini-2.0-flash`        | `generativelanguage.googleapis.com/v1beta/...` |
-| Mistral   | `mistral-large-latest`    | `api.mistral.ai/v1/chat/completions` |
-| Codex     | `gpt-4o`                  | `api.openai.com/v1/chat/completions` |
+| Provider | Type | Default Model | How it works |
+|----------|------|---------------|--------------|
+| `claude-code` | CLI | *(uses claude default)* | Calls `claude -p` directly |
+| `codex` | CLI | *(uses codex default)* | Calls `codex -q` directly |
+| `openai` | API | `gpt-4o` | `api.openai.com/v1/chat/completions` |
+| `gemini` | API | `gemini-2.0-flash` | `generativelanguage.googleapis.com/v1beta/...` |
+| `mistral` | API | `mistral-large-latest` | `api.mistral.ai/v1/chat/completions` |
 
 ## License
 

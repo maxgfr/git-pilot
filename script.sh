@@ -3,7 +3,7 @@
 # ==============================================================================
 #  git-pilot
 #  AI-powered git automation: smart commits, conflict resolution, and auto-rebase
-#  Supports Anthropic, OpenAI, Gemini, Mistral, Codex
+#  Supports Claude Code, OpenAI, Gemini, Mistral, Codex (CLI-based)
 # ==============================================================================
 
 set -e
@@ -88,9 +88,9 @@ print_usage() {
     echo "  setup               Run interactive configuration wizard"
     echo ""
     echo "Options:"
-    echo "  -p, --provider <name>    Provider: anthropic, openai, gemini, mistral, codex"
-    echo "  -m, --model <name>       Model name (e.g. claude-sonnet-4-20250514, gpt-4o)"
-    echo "      --api-key <key>      API key (overrides config)"
+    echo "  -p, --provider <name>    Provider: claude-code, openai, gemini, mistral, codex"
+    echo "  -m, --model <name>       Model name (e.g. sonnet, gpt-4o) — for API providers"
+    echo "      --api-key <key>      API key (for API providers: openai, gemini, mistral)"
     echo "  -d, --dry-run            Preview commit message without committing"
     echo "  -a, --auto-stage         Stage all changes before commit"
     echo "      --auto-push          Push after commit"
@@ -108,7 +108,8 @@ print_usage() {
     echo "  git-pilot resolve                  # Resolve merge conflicts"
     echo "  git-pilot rebase                   # Pull --rebase with AI"
     echo "  git-pilot setup                    # Configure provider & preferences"
-    echo "  git-pilot -p openai -m gpt-4o      # Use specific provider/model"
+    echo "  git-pilot -p openai -m gpt-4o      # Use specific API provider/model"
+    echo "  git-pilot -p codex                 # Use OpenAI Codex CLI"
 }
 
 ask_yes_no() {
@@ -244,14 +245,12 @@ load_config() {
         done < "$CONFIG_FILE"
     fi
 
-    # Env var fallbacks for API key
+    # Env var fallbacks for API key (only for API-based providers)
     if [ -z "$API_KEY" ]; then
         case "$PROVIDER" in
-            anthropic)  API_KEY="${ANTHROPIC_API_KEY:-}" ;;
             openai)     API_KEY="${OPENAI_API_KEY:-}" ;;
             gemini)     API_KEY="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}" ;;
             mistral)    API_KEY="${MISTRAL_API_KEY:-}" ;;
-            codex)      API_KEY="${OPENAI_API_KEY:-}" ;;
         esac
     fi
 }
@@ -277,12 +276,21 @@ EOF
 get_default_model() {
     local p="$1"
     case "$p" in
-        anthropic)  echo "claude-sonnet-4-20250514" ;;
-        openai)     echo "gpt-4o" ;;
-        gemini)     echo "gemini-2.0-flash" ;;
-        mistral)    echo "mistral-large-latest" ;;
-        codex)      echo "gpt-4o" ;;
-        *)          echo "claude-sonnet-4-20250514" ;;
+        claude-code) echo "" ;;  # claude CLI uses its own model selection
+        openai)      echo "gpt-4o" ;;
+        gemini)      echo "gemini-2.0-flash" ;;
+        mistral)     echo "mistral-large-latest" ;;
+        codex)       echo "" ;;  # codex CLI uses its own model selection
+        *)           echo "" ;;
+    esac
+}
+
+# Check if provider is CLI-based (no API key needed)
+is_cli_provider() {
+    local p="$1"
+    case "$p" in
+        claude-code|codex) return 0 ;;
+        *) return 1 ;;
     esac
 }
 
@@ -296,20 +304,35 @@ run_setup() {
     echo ""
 
     # Provider
-    PROVIDER=$(prompt_select "Choose your AI provider:" "anthropic" "openai" "gemini" "mistral" "codex")
+    PROVIDER=$(prompt_select "Choose your AI provider:" "claude-code" "codex" "openai" "gemini" "mistral")
     log_info "Provider: $PROVIDER"
 
-    # API Key
-    API_KEY=$(prompt_secret "Enter your API key")
-    if [ -z "$API_KEY" ]; then
-        log_error "API key is required."
-        exit 1
-    fi
+    if is_cli_provider "$PROVIDER"; then
+        # CLI-based provider — check CLI is installed
+        local cli_cmd
+        case "$PROVIDER" in
+            claude-code) cli_cmd="claude" ;;
+            codex)       cli_cmd="codex" ;;
+        esac
+        if command -v "$cli_cmd" >/dev/null 2>&1; then
+            log_success "$cli_cmd CLI found!"
+        else
+            log_warn "$cli_cmd CLI not found. Install it before using git-pilot."
+        fi
+        API_KEY=""
+        MODEL=""
+    else
+        # API-based provider — need key + model
+        API_KEY=$(prompt_secret "Enter your API key")
+        if [ -z "$API_KEY" ]; then
+            log_error "API key is required for $PROVIDER."
+            exit 1
+        fi
 
-    # Model
-    local default_model
-    default_model=$(get_default_model "$PROVIDER")
-    MODEL=$(prompt_input "Model" "$default_model")
+        local default_model
+        default_model=$(get_default_model "$PROVIDER")
+        MODEL=$(prompt_input "Model" "$default_model")
+    fi
 
     # Preferences
     echo ""
@@ -341,15 +364,15 @@ run_setup() {
 
     LANGUAGE=$(prompt_input "Commit message language" "en")
 
-    # Test API
+    # Test connection
     echo ""
-    log_info "Testing API connection..."
+    log_info "Testing connection..."
     local test_response
     test_response=$(call_ai_api "Say 'OK' if you can read this." 2>&1) || true
     if [ -n "$test_response" ] && [ "$test_response" != "null" ]; then
-        log_success "API connection successful!"
+        log_success "Connection successful!"
     else
-        log_warn "Could not verify API connection. Configuration saved anyway."
+        log_warn "Could not verify connection. Configuration saved anyway."
     fi
 
     save_config
@@ -358,7 +381,7 @@ run_setup() {
 }
 
 # ==============================================================================
-#  API Providers
+#  AI Providers (CLI + API)
 # ==============================================================================
 
 call_ai_api() {
@@ -366,11 +389,11 @@ call_ai_api() {
     local response
 
     case "$PROVIDER" in
-        anthropic)  response=$(call_anthropic "$prompt") ;;
-        openai)     response=$(call_openai "$prompt" "$MODEL") ;;
-        gemini)     response=$(call_gemini "$prompt") ;;
-        mistral)    response=$(call_mistral "$prompt") ;;
-        codex)      response=$(call_openai "$prompt" "$MODEL") ;;
+        claude-code) response=$(call_claude_code "$prompt") ;;
+        codex)       response=$(call_codex_cli "$prompt") ;;
+        openai)      response=$(call_openai "$prompt" "$MODEL") ;;
+        gemini)      response=$(call_gemini "$prompt") ;;
+        mistral)     response=$(call_mistral "$prompt") ;;
         *)
             log_error "Unknown provider: $PROVIDER"
             exit 1
@@ -380,41 +403,49 @@ call_ai_api() {
     echo "$response"
 }
 
-call_anthropic() {
+# --- CLI-based providers ---
+
+call_claude_code() {
     local prompt="$1"
-    local body
-    body=$(jq -n \
-        --arg model "$MODEL" \
-        --argjson max_tokens "$MAX_TOKENS" \
-        --arg prompt "$prompt" \
-        '{
-            model: $model,
-            max_tokens: $max_tokens,
-            messages: [{ role: "user", content: $prompt }]
-        }')
-
     local result
-    result=$(curl -s -w "\n%{http_code}" \
-        -H "Content-Type: application/json" \
-        -H "x-api-key: $API_KEY" \
-        -H "anthropic-version: 2023-06-01" \
-        -d "$body" \
-        "https://api.anthropic.com/v1/messages")
+    local model_flag=""
 
-    local http_code
-    http_code=$(echo "$result" | tail -n1)
-    local response_body
-    response_body=$(echo "$result" | sed '$d')
+    if [ -n "$MODEL" ]; then
+        model_flag="--model $MODEL"
+    fi
 
-    if [ "$http_code" -ne 200 ]; then
-        local error_msg
-        error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Anthropic API error ($http_code): $error_msg"
+    # shellcheck disable=SC2086
+    result=$(claude -p "$prompt" $model_flag 2>/dev/null) || {
+        log_error "Claude Code CLI failed. Is 'claude' installed and authenticated?"
+        exit 1
+    }
+
+    if [ -z "$result" ]; then
+        log_error "Claude Code returned empty response."
         exit 1
     fi
 
-    echo "$response_body" | jq -r '.content[0].text'
+    echo "$result"
 }
+
+call_codex_cli() {
+    local prompt="$1"
+    local result
+
+    result=$(codex -q "$prompt" 2>/dev/null) || {
+        log_error "Codex CLI failed. Is 'codex' installed and authenticated?"
+        exit 1
+    }
+
+    if [ -z "$result" ]; then
+        log_error "Codex returned empty response."
+        exit 1
+    fi
+
+    echo "$result"
+}
+
+# --- API-based providers ---
 
 call_openai() {
     local prompt="$1"
@@ -600,7 +631,9 @@ generate_commit_message() {
     local prompt
     prompt=$(build_commit_prompt "$truncated_diff")
 
-    log_info "Generating commit message with $PROVIDER ($MODEL)..."
+    local provider_label="$PROVIDER"
+    [ -n "$MODEL" ] && provider_label="$PROVIDER ($MODEL)"
+    log_info "Generating commit message with $provider_label..."
     local message
     message=$(call_ai_api "$prompt")
 
@@ -860,7 +893,7 @@ load_config
 
 # Default provider
 if [ -z "$PROVIDER" ]; then
-    PROVIDER="anthropic"
+    PROVIDER="claude-code"
 fi
 
 # Default model per provider
@@ -874,15 +907,23 @@ if [ -z "$LANGUAGE" ]; then
 fi
 
 # Check dependencies
-require_command curl
-require_command jq
 require_command git
 
-# Check API key
-if [ -z "$API_KEY" ]; then
-    log_error "No API key configured. Run 'git-pilot setup' or set --api-key / environment variable."
-    log_info "Environment variables: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY"
-    exit 1
+if is_cli_provider "$PROVIDER"; then
+    # CLI-based: check the CLI tool is installed
+    case "$PROVIDER" in
+        claude-code) require_command claude "claude-code" ;;
+        codex)       require_command codex "codex" ;;
+    esac
+else
+    # API-based: need curl + jq + API key
+    require_command curl
+    require_command jq
+    if [ -z "$API_KEY" ]; then
+        log_error "No API key configured for $PROVIDER. Run 'git-pilot setup' or set --api-key / environment variable."
+        log_info "Environment variables: OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY"
+        exit 1
+    fi
 fi
 
 # Route action
