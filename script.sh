@@ -844,6 +844,22 @@ generate_commit_message() {
     echo "$message"
 }
 
+resolve_keep_both() {
+    local file="$1"
+    local tmp
+    tmp=$(mktemp)
+
+    awk '
+    /^<<<<<<</ { in_conflict=1; next }
+    in_conflict && /^\|\|\|\|\|\|\|/ { skip_base=1; next }
+    in_conflict && /^=======/ { skip_base=0; next }
+    in_conflict && /^>>>>>>>/ { in_conflict=0; skip_base=0; next }
+    !skip_base { print }
+    ' "$file" > "$tmp"
+
+    mv "$tmp" "$file"
+}
+
 resolve_keep_ours() {
     local file="$1"
     local tmp
@@ -851,9 +867,9 @@ resolve_keep_ours() {
 
     awk '
     /^<<<<<<</ { in_conflict=1; keep=1; next }
-    /^\|\|\|\|\|\|\|/ { keep=0; next }
-    /^=======/ { keep=0; next }
-    /^>>>>>>>/ { in_conflict=0; keep=0; next }
+    in_conflict && /^\|\|\|\|\|\|\|/ { keep=0; next }
+    in_conflict && /^=======/ { keep=0; next }
+    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
     !in_conflict || keep { print }
     ' "$file" > "$tmp"
 
@@ -867,9 +883,9 @@ resolve_keep_theirs() {
 
     awk '
     /^<<<<<<</ { in_conflict=1; keep=0; next }
-    /^\|\|\|\|\|\|\|/ { next }
-    /^=======/ { keep=1; next }
-    /^>>>>>>>/ { in_conflict=0; keep=0; next }
+    in_conflict && /^\|\|\|\|\|\|\|/ { next }
+    in_conflict && /^=======/ { keep=1; next }
+    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
     !in_conflict || keep { print }
     ' "$file" > "$tmp"
 
@@ -877,35 +893,57 @@ resolve_keep_theirs() {
 }
 
 check_conflict_markers() {
-    local conflict_files
-    conflict_files=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+    # -I: skip binary files  -c: show count per file
+    local conflict_counts
+    conflict_counts=$(git grep -Ic '^<<<<<<<' 2>/dev/null || true)
 
-    if [ -z "$conflict_files" ]; then
+    if [ -z "$conflict_counts" ]; then
         return 0
     fi
 
-    local count
-    count=$(echo "$conflict_files" | wc -l | xargs)
+    local file_count
+    file_count=$(echo "$conflict_counts" | wc -l | xargs)
+
+    local total=0
+    while IFS= read -r line; do
+        local n="${line##*:}"
+        total=$((total + n))
+    done <<< "$conflict_counts"
 
     echo "" >&2
-    log_error "Whoa, hold on! You have unresolved merge conflicts in $count file(s):"
+    log_error "Whoa, hold on! You have $total unresolved conflict(s) across $file_count file(s):"
     echo "" >&2
-    echo "$conflict_files" | while IFS= read -r f; do
-        printf "  ${RED}✗${NC} %s\n" "$f" >&2
-    done
+    while IFS= read -r line; do
+        local file="${line%:*}"
+        local n="${line##*:}"
+        printf "  ${RED}✗${NC} %s ${YELLOW}(%s)${NC}\n" "$file" "$n conflict$([ "$n" -gt 1 ] && echo s)" >&2
+    done <<< "$conflict_counts"
     echo "" >&2
     log_warn "You need to resolve these before committing or pushing."
     echo "" >&2
 
+    # Extract just filenames for the resolve loop
+    local conflict_files
+    conflict_files=$(echo "$conflict_counts" | while IFS= read -r line; do echo "${line%:*}"; done)
+
     local choice
     choice=$(prompt_select "How do you want to resolve?" \
-        "Accept current (keep HEAD/ours)" \
-        "Accept incoming (keep theirs)" \
-        "Let AI resolve (recommended)" \
+        "Accept both (keep ours + theirs)" \
+        "Accept current (keep HEAD/ours only)" \
+        "Accept incoming (keep theirs only)" \
         "Cancel — I'll fix it myself")
 
     case "$choice" in
-        "Accept current (keep HEAD/ours)")
+        "Accept both (keep ours + theirs)")
+            log_info "Accepting both sides for all conflicts..."
+            echo "$conflict_files" | while IFS= read -r f; do
+                resolve_keep_both "$f"
+                git add "$f"
+                log_success "Resolved (both): $f"
+            done
+            log_success "All conflicts resolved — kept both sides."
+            ;;
+        "Accept current (keep HEAD/ours only)")
             log_info "Accepting current (ours) for all conflicts..."
             echo "$conflict_files" | while IFS= read -r f; do
                 resolve_keep_ours "$f"
@@ -914,7 +952,7 @@ check_conflict_markers() {
             done
             log_success "All conflicts resolved — kept current (HEAD) version."
             ;;
-        "Accept incoming (keep theirs)")
+        "Accept incoming (keep theirs only)")
             log_info "Accepting incoming (theirs) for all conflicts..."
             echo "$conflict_files" | while IFS= read -r f; do
                 resolve_keep_theirs "$f"
@@ -922,20 +960,6 @@ check_conflict_markers() {
                 log_success "Resolved (theirs): $f"
             done
             log_success "All conflicts resolved — kept incoming version."
-            ;;
-        "Let AI resolve (recommended)")
-            log_info "Letting AI resolve conflicts — hang tight..."
-            resolve_conflicts "$conflict_files"
-            local remaining
-            remaining=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
-            if [ -n "$remaining" ]; then
-                log_error "AI couldn't resolve all conflicts. Fix these manually:"
-                echo "$remaining" | while IFS= read -r f; do
-                    printf "  ${RED}✗${NC} %s\n" "$f" >&2
-                done
-                exit 1
-            fi
-            log_success "AI resolved all conflicts!"
             ;;
         *)
             log_info "No worries — fix your conflicts and come back!"
@@ -986,17 +1010,21 @@ gather_merge_context() {
     local budget=8000
     local ctx=""
 
+    # Resolve actual git dir (supports worktrees where .git is a file)
+    local git_dir
+    git_dir=$(git rev-parse --git-dir 2>/dev/null || echo ".git")
+
     # Current branch
     local current_branch
     current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
     ctx+="Current branch: $current_branch"$'\n'
 
     # Detect merge vs rebase and gather incoming branch info
-    if [ -f ".git/MERGE_HEAD" ]; then
+    if [ -f "$git_dir/MERGE_HEAD" ]; then
         local merge_head
-        merge_head=$(cat .git/MERGE_HEAD)
+        merge_head=$(cat "$git_dir/MERGE_HEAD")
         local merge_msg=""
-        [ -f ".git/MERGE_MSG" ] && merge_msg=$(head -1 .git/MERGE_MSG)
+        [ -f "$git_dir/MERGE_MSG" ] && merge_msg=$(head -1 "$git_dir/MERGE_MSG")
         ctx+="Merge in progress: $merge_msg"$'\n'
         ctx+="Merge head: $merge_head"$'\n'
 
@@ -1030,11 +1058,11 @@ gather_merge_context() {
             fi
         fi
 
-    elif [ -d ".git/rebase-merge" ] || [ -d ".git/rebase-apply" ]; then
+    elif [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; then
         ctx+="Rebase in progress."$'\n'
         local rebase_dir=""
-        [ -d ".git/rebase-merge" ] && rebase_dir=".git/rebase-merge"
-        [ -d ".git/rebase-apply" ] && rebase_dir=".git/rebase-apply"
+        [ -d "$git_dir/rebase-merge" ] && rebase_dir="$git_dir/rebase-merge"
+        [ -d "$git_dir/rebase-apply" ] && rebase_dir="$git_dir/rebase-apply"
 
         if [ -n "$rebase_dir" ]; then
             [ -f "$rebase_dir/head-name" ] && ctx+="Rebasing: $(cat "$rebase_dir/head-name")"$'\n'
@@ -1071,7 +1099,7 @@ resolve_conflicts() {
         conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
         # Also check for leftover markers in tracked files (not in unmerged state)
         if [ -z "$conflict_files" ]; then
-            conflict_files=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+            conflict_files=$(git grep -Il '^<<<<<<<' 2>/dev/null || true)
         fi
     fi
 
@@ -1141,7 +1169,7 @@ Instructions:
     local remaining
     remaining=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
     if [ -z "$remaining" ]; then
-        remaining=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+        remaining=$(git grep -Il '^<<<<<<<' 2>/dev/null || true)
     fi
     if [ -z "$remaining" ]; then
         log_success "All conflicts resolved!"

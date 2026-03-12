@@ -265,25 +265,38 @@ jobs:
           touch init.txt && git add init.txt && git commit -m "init"
 
           # Create a file with conflict markers and stage it
-          cat > conflict.txt << 'MARKERS'
-          some code
-          <<<<<<< HEAD
-          current version
-          ||||||| abc1234
-          original version
-          =======
-          incoming version
-          >>>>>>> feature-branch
-          more code
-          MARKERS
+          printf 'some code\n<<<<<<< HEAD\ncurrent version\n||||||| abc1234\noriginal version\n=======\nincoming version\n>>>>>>> feature-branch\nmore code\n' > conflict.txt
           git add conflict.txt
 
           export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
           # Feed "4" (Cancel) to prompt_select so it exits
           output=$(echo "4" | "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true)
           echo "$output"
-          echo "$output" | grep -qi "unresolved merge conflicts" || { echo "FAIL: should detect conflict markers"; exit 1; }
+          echo "$output" | grep -qi "unresolved conflict" || { echo "FAIL: should detect conflict markers"; exit 1; }
           echo "$output" | grep -qi "conflict.txt" || { echo "FAIL: should list conflicted file"; exit 1; }
+          echo "$output" | grep -qi "1 conflict" || { echo "FAIL: should show conflict count"; exit 1; }
+
+      - name: "Test: accept both resolves conflicts (default)"
+        run: |
+          cd "$(mktemp -d)"
+          git init
+          git config user.email "test@test.com"
+          git config user.name "Test"
+          echo "base" > file.txt && git add file.txt && git commit -m "init"
+
+          # Write conflict markers (diff3 format)
+          printf 'before\n<<<<<<< HEAD\ncurrent line\n||||||| abc1234\noriginal line\n=======\nincoming line\n>>>>>>> branch\nafter\n' > file.txt
+          git add file.txt
+
+          export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
+          # Feed "1" (Accept both — default)
+          echo "1" | "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true
+          content=$(cat file.txt)
+          echo "Resolved content: $content"
+          echo "$content" | grep -q "current line" || { echo "FAIL: should keep current"; exit 1; }
+          echo "$content" | grep -q "incoming line" || { echo "FAIL: should keep incoming"; exit 1; }
+          echo "$content" | grep -q "original line" && { echo "FAIL: should NOT keep base"; exit 1; } || true
+          echo "$content" | grep -q "<<<<<<<" && { echo "FAIL: markers should be removed"; exit 1; } || true
 
       - name: "Test: accept current resolves conflicts (ours)"
         run: |
@@ -298,8 +311,8 @@ jobs:
           git add file.txt
 
           export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
-          # Feed "1" (Accept current) then the rest will fail at AI call — but file should be resolved
-          echo "1" | "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true
+          # Feed "2" (Accept current/ours)
+          echo "2" | "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true
           content=$(cat file.txt)
           echo "Resolved content: $content"
           echo "$content" | grep -q "current line" || { echo "FAIL: should keep current"; exit 1; }
@@ -319,8 +332,8 @@ jobs:
           git add file.txt
 
           export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
-          # Feed "2" (Accept incoming)
-          echo "2" | "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true
+          # Feed "3" (Accept incoming/theirs)
+          echo "3" | "$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true
           content=$(cat file.txt)
           echo "Resolved content: $content"
           echo "$content" | grep -q "incoming line" || { echo "FAIL: should keep incoming"; exit 1; }
@@ -340,7 +353,7 @@ jobs:
           # Should NOT mention conflicts (will fail at API call, but that's fine)
           output=$("$GITHUB_WORKSPACE/script.sh" -p anthropic --api-key "fake" 2>&1 || true)
           echo "$output"
-          echo "$output" | grep -qi "unresolved merge conflicts" && { echo "FAIL: should not detect conflicts on clean files"; exit 1; } || true
+          echo "$output" | grep -qi "unresolved conflict" && { echo "FAIL: should not detect conflicts on clean files"; exit 1; } || true
 
       # ── Config file permissions ──
 
