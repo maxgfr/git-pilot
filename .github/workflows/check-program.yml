@@ -370,6 +370,25 @@ jobs:
           perms=$(stat -c %a "$CFG_DIR/config")
           [[ "$perms" == "600" ]] || { echo "FAIL: config should be 600, got $perms"; exit 1; }
 
+      # ── Provider validation ──
+
+      - name: "Test: unknown provider exits with error"
+        run: |
+          cd "$(mktemp -d)"
+          git init
+          git config user.email "test@test.com"
+          git config user.name "Test"
+          touch init.txt && git add init.txt && git commit -m "init"
+
+          export GIT_PILOT_CONFIG_DIR="$(mktemp -d)"
+          if "$GITHUB_WORKSPACE/script.sh" -p foobar 2>&1; then
+            echo "FAIL: should have exited with error"
+            exit 1
+          fi
+          output=$("$GITHUB_WORKSPACE/script.sh" -p foobar 2>&1 || true)
+          echo "$output" | grep -qi "unknown provider" || { echo "FAIL: should say unknown provider"; exit 1; }
+          echo "$output" | grep -qi "valid providers" || { echo "FAIL: should list valid providers"; exit 1; }
+
       # ── Argument parsing edge cases ──
 
       - name: "Test: subcommand aliases"

@@ -6,7 +6,7 @@
 #  Supports Claude Code, Codex (CLI), Anthropic, OpenAI, Gemini, Mistral (API)
 # ==============================================================================
 
-set -e
+set -eo pipefail
 
 # --- Configuration & Defaults ---
 VERSION="1.10.1"
@@ -936,29 +936,29 @@ check_conflict_markers() {
     case "$choice" in
         "Accept both (keep ours + theirs)")
             log_info "Accepting both sides for all conflicts..."
-            echo "$conflict_files" | while IFS= read -r f; do
+            while IFS= read -r f; do
                 resolve_keep_both "$f"
                 git add "$f"
                 log_success "Resolved (both): $f"
-            done
+            done <<< "$conflict_files"
             log_success "All conflicts resolved — kept both sides."
             ;;
         "Accept current (keep HEAD/ours only)")
             log_info "Accepting current (ours) for all conflicts..."
-            echo "$conflict_files" | while IFS= read -r f; do
+            while IFS= read -r f; do
                 resolve_keep_ours "$f"
                 git add "$f"
                 log_success "Resolved (ours): $f"
-            done
+            done <<< "$conflict_files"
             log_success "All conflicts resolved — kept current (HEAD) version."
             ;;
         "Accept incoming (keep theirs only)")
             log_info "Accepting incoming (theirs) for all conflicts..."
-            echo "$conflict_files" | while IFS= read -r f; do
+            while IFS= read -r f; do
                 resolve_keep_theirs "$f"
                 git add "$f"
                 log_success "Resolved (theirs): $f"
-            done
+            done <<< "$conflict_files"
             log_success "All conflicts resolved — kept incoming version."
             ;;
         *)
@@ -1093,6 +1093,7 @@ gather_merge_context() {
     echo "$ctx"
 }
 
+# shellcheck disable=SC2120
 resolve_conflicts() {
     check_git_repo
 
@@ -1121,7 +1122,7 @@ resolve_conflicts() {
     local merge_context
     merge_context=$(gather_merge_context)
 
-    echo "$conflict_files" | while IFS= read -r file; do
+    while IFS= read -r file; do
         log_info "Resolving: $file"
 
         local content
@@ -1168,7 +1169,7 @@ Instructions:
         else
             log_error "Failed to resolve: $file"
         fi
-    done
+    done <<< "$conflict_files"
 
     # Check if any conflicts remain
     local remaining
@@ -1220,7 +1221,7 @@ do_pull_rebase() {
             exit 1
         fi
 
-        if ! git rebase --continue 2>/dev/null; then
+        if ! GIT_EDITOR=true git rebase --continue 2>/dev/null; then
             # More conflicts in next commit
             continue
         else
@@ -1345,6 +1346,16 @@ load_config
 if [ -z "$PROVIDER" ]; then
     PROVIDER="claude-code"
 fi
+
+# Validate provider
+case "$PROVIDER" in
+    claude-code|codex|anthropic|openai|gemini|mistral) ;;
+    *)
+        log_error "Unknown provider: $PROVIDER"
+        log_info "Valid providers: claude-code, codex, anthropic, openai, gemini, mistral"
+        exit 1
+        ;;
+esac
 
 # Default model per provider
 if [ -z "$MODEL" ]; then
