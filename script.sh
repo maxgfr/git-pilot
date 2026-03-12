@@ -844,8 +844,109 @@ generate_commit_message() {
     echo "$message"
 }
 
+resolve_keep_ours() {
+    local file="$1"
+    local tmp
+    tmp=$(mktemp)
+
+    awk '
+    /^<<<<<<</ { in_conflict=1; keep=1; next }
+    /^\|\|\|\|\|\|\|/ { keep=0; next }
+    /^=======/ { keep=0; next }
+    /^>>>>>>>/ { in_conflict=0; keep=0; next }
+    !in_conflict || keep { print }
+    ' "$file" > "$tmp"
+
+    mv "$tmp" "$file"
+}
+
+resolve_keep_theirs() {
+    local file="$1"
+    local tmp
+    tmp=$(mktemp)
+
+    awk '
+    /^<<<<<<</ { in_conflict=1; keep=0; next }
+    /^\|\|\|\|\|\|\|/ { next }
+    /^=======/ { keep=1; next }
+    /^>>>>>>>/ { in_conflict=0; keep=0; next }
+    !in_conflict || keep { print }
+    ' "$file" > "$tmp"
+
+    mv "$tmp" "$file"
+}
+
+check_conflict_markers() {
+    local conflict_files
+    conflict_files=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+
+    if [ -z "$conflict_files" ]; then
+        return 0
+    fi
+
+    local count
+    count=$(echo "$conflict_files" | wc -l | xargs)
+
+    echo "" >&2
+    log_error "Whoa, hold on! You have unresolved merge conflicts in $count file(s):"
+    echo "" >&2
+    echo "$conflict_files" | while IFS= read -r f; do
+        printf "  ${RED}✗${NC} %s\n" "$f" >&2
+    done
+    echo "" >&2
+    log_warn "You need to resolve these before committing or pushing."
+    echo "" >&2
+
+    local choice
+    choice=$(prompt_select "How do you want to resolve?" \
+        "Accept current (keep HEAD/ours)" \
+        "Accept incoming (keep theirs)" \
+        "Let AI resolve (recommended)" \
+        "Cancel — I'll fix it myself")
+
+    case "$choice" in
+        "Accept current (keep HEAD/ours)")
+            log_info "Accepting current (ours) for all conflicts..."
+            echo "$conflict_files" | while IFS= read -r f; do
+                resolve_keep_ours "$f"
+                git add "$f"
+                log_success "Resolved (ours): $f"
+            done
+            log_success "All conflicts resolved — kept current (HEAD) version."
+            ;;
+        "Accept incoming (keep theirs)")
+            log_info "Accepting incoming (theirs) for all conflicts..."
+            echo "$conflict_files" | while IFS= read -r f; do
+                resolve_keep_theirs "$f"
+                git add "$f"
+                log_success "Resolved (theirs): $f"
+            done
+            log_success "All conflicts resolved — kept incoming version."
+            ;;
+        "Let AI resolve (recommended)")
+            log_info "Letting AI resolve conflicts — hang tight..."
+            resolve_conflicts "$conflict_files"
+            local remaining
+            remaining=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+            if [ -n "$remaining" ]; then
+                log_error "AI couldn't resolve all conflicts. Fix these manually:"
+                echo "$remaining" | while IFS= read -r f; do
+                    printf "  ${RED}✗${NC} %s\n" "$f" >&2
+                done
+                exit 1
+            fi
+            log_success "AI resolved all conflicts!"
+            ;;
+        *)
+            log_info "No worries — fix your conflicts and come back!"
+            exit 0
+            ;;
+    esac
+}
+
 do_commit() {
     check_git_repo
+    check_conflict_markers
 
     local message
     message=$(generate_commit_message) || exit 1
@@ -881,11 +982,98 @@ do_commit() {
     fi
 }
 
+gather_merge_context() {
+    local budget=8000
+    local ctx=""
+
+    # Current branch
+    local current_branch
+    current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+    ctx+="Current branch: $current_branch"$'\n'
+
+    # Detect merge vs rebase and gather incoming branch info
+    if [ -f ".git/MERGE_HEAD" ]; then
+        local merge_head
+        merge_head=$(cat .git/MERGE_HEAD)
+        local merge_msg=""
+        [ -f ".git/MERGE_MSG" ] && merge_msg=$(head -1 .git/MERGE_MSG)
+        ctx+="Merge in progress: $merge_msg"$'\n'
+        ctx+="Merge head: $merge_head"$'\n'
+
+        # Commits from incoming branch (what's being merged in)
+        local incoming_log
+        incoming_log=$(git log --oneline -10 "$merge_head" --not HEAD 2>/dev/null || true)
+        if [ -n "$incoming_log" ]; then
+            ctx+=$'\n'"Incoming commits (theirs):"$'\n'"$incoming_log"$'\n'
+        fi
+
+        # Commits from current branch (ours)
+        local our_log
+        our_log=$(git log --oneline -10 HEAD --not "$merge_head" 2>/dev/null || true)
+        if [ -n "$our_log" ]; then
+            ctx+=$'\n'"Current branch commits (ours):"$'\n'"$our_log"$'\n'
+        fi
+
+        # Diff stats from both sides to understand scope of changes
+        local merge_base
+        merge_base=$(git merge-base HEAD "$merge_head" 2>/dev/null || true)
+        if [ -n "$merge_base" ]; then
+            local ours_stat
+            ours_stat=$(git diff --stat "$merge_base" HEAD 2>/dev/null || true)
+            if [ -n "$ours_stat" ]; then
+                ctx+=$'\n'"Changes on current branch (ours):"$'\n'"$ours_stat"$'\n'
+            fi
+            local theirs_stat
+            theirs_stat=$(git diff --stat "$merge_base" "$merge_head" 2>/dev/null || true)
+            if [ -n "$theirs_stat" ]; then
+                ctx+=$'\n'"Changes on incoming branch (theirs):"$'\n'"$theirs_stat"$'\n'
+            fi
+        fi
+
+    elif [ -d ".git/rebase-merge" ] || [ -d ".git/rebase-apply" ]; then
+        ctx+="Rebase in progress."$'\n'
+        local rebase_dir=""
+        [ -d ".git/rebase-merge" ] && rebase_dir=".git/rebase-merge"
+        [ -d ".git/rebase-apply" ] && rebase_dir=".git/rebase-apply"
+
+        if [ -n "$rebase_dir" ]; then
+            [ -f "$rebase_dir/head-name" ] && ctx+="Rebasing: $(cat "$rebase_dir/head-name")"$'\n'
+            [ -f "$rebase_dir/onto" ] && ctx+="Onto: $(git log --oneline -1 "$(cat "$rebase_dir/onto")" 2>/dev/null || true)"$'\n'
+            if [ -f "$rebase_dir/message" ]; then
+                ctx+="Current patch: $(head -3 "$rebase_dir/message")"$'\n'
+            fi
+        fi
+    else
+        # No active merge/rebase — just provide recent history for context
+        local recent_log
+        recent_log=$(git log --oneline -10 2>/dev/null || true)
+        if [ -n "$recent_log" ]; then
+            ctx+=$'\n'"Recent commits:"$'\n'"$recent_log"$'\n'
+        fi
+    fi
+
+    # Truncate to budget
+    if [ "${#ctx}" -gt "$budget" ]; then
+        ctx="${ctx:0:$budget}"$'\n'"[... context truncated]"
+    fi
+
+    echo "$ctx"
+}
+
 resolve_conflicts() {
     check_git_repo
 
-    local conflict_files
-    conflict_files=$(git diff --name-only --diff-filter=U)
+    # Accept optional file list as arguments; fall back to git unmerged files
+    local conflict_files=""
+    if [ $# -gt 0 ]; then
+        conflict_files="$1"
+    else
+        conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+        # Also check for leftover markers in tracked files (not in unmerged state)
+        if [ -z "$conflict_files" ]; then
+            conflict_files=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+        fi
+    fi
 
     if [ -z "$conflict_files" ]; then
         log_info "No merge conflicts found."
@@ -896,18 +1084,33 @@ resolve_conflicts() {
     count=$(echo "$conflict_files" | wc -l | xargs)
     log_info "Found $count file(s) with conflicts."
 
+    # Gather rich context once for all files
+    local merge_context
+    merge_context=$(gather_merge_context)
+
     echo "$conflict_files" | while IFS= read -r file; do
         log_info "Resolving: $file"
 
         local content
         content=$(cat "$file")
-        local prompt="You are resolving a git merge conflict. Below is the file content with conflict markers (<<<<<<<, =======, >>>>>>>).
 
-Resolve the conflict by choosing the best combination of both sides. Output ONLY the resolved file content, nothing else. No explanations, no markdown fences.
+        # Build a context-rich prompt
+        local prompt="You are resolving a git merge conflict. You must understand the INTENT behind both sides to produce the correct resolution.
 
-File: $file
-Content:
-$content"
+=== MERGE CONTEXT ===
+$merge_context
+=== END MERGE CONTEXT ===
+
+=== CONFLICTED FILE: $file ===
+$content
+=== END FILE ===
+
+Instructions:
+- The file contains conflict markers: <<<<<<< (current/ours), ||||||| (common ancestor, if present), ======= (separator), >>>>>>> (incoming/theirs).
+- Use the merge context above to understand WHY each side made its changes.
+- Produce the correctly resolved file that preserves the intent of BOTH sides when possible.
+- If both sides changed the same thing differently, combine them logically based on the commit context.
+- Output ONLY the resolved file content. No explanations, no markdown fences, no extra text."
 
         local resolved
         resolved=$(call_ai_api "$prompt") || { log_error "Failed to resolve: $file"; continue; }
@@ -936,7 +1139,10 @@ $content"
 
     # Check if any conflicts remain
     local remaining
-    remaining=$(git diff --name-only --diff-filter=U)
+    remaining=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    if [ -z "$remaining" ]; then
+        remaining=$(git grep -l '^<<<<<<<' 2>/dev/null || true)
+    fi
     if [ -z "$remaining" ]; then
         log_success "All conflicts resolved!"
     else
