@@ -998,7 +998,12 @@ do_commit() {
 
         if [ "$AUTO_PUSH" = true ]; then
             log_info "Pushing..."
-            git push
+            if ! git push 2>&1; then
+                log_warn "Push rejected — pulling with rebase first..."
+                do_pull_rebase
+                log_info "Pushing again..."
+                git push
+            fi
             log_success "Pushed!"
         fi
     else
