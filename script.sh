@@ -22,8 +22,10 @@ DRY_RUN=false
 AUTO_STAGE=false
 AUTO_PUSH=false
 CONVENTIONAL=false
+COMMIT_TYPE=""    # forced conventional commit type (feat, fix, docs, etc.)
 EMOJI=false
 LANGUAGE=""
+NO_BULLETS=false
 SKIP_CONFIRM=false
 ACTION="commit"  # commit | setup | config | resolve | rebase
 
@@ -112,6 +114,7 @@ print_usage() {
     echo ""
     echo "Commands:"
     echo "  commit              Generate AI commit message and commit (default)"
+    echo "  <type>              Force conventional commit type (feat, fix, docs, refactor, chore, ...)"
     echo "  resolve             Resolve merge conflicts with AI"
     echo "  rebase              Pull --rebase with AI conflict resolution"
     echo "  setup               Run interactive configuration wizard"
@@ -127,12 +130,15 @@ print_usage() {
     echo "  -c, --conventional       Use Conventional Commits format"
     echo "  -e, --emoji              Add emoji to commit message"
     echo "  -l, --lang <code>        Language for commit message (e.g. en, fr, es)"
+    echo "  -B, --no-bullets         Title only, no bullet points in description"
     echo "  -y, --yes                Skip confirmation prompts"
     echo "  -v, --version            Show version"
     echo "  -h, --help               Show this help message"
     echo ""
     echo "Examples:"
     echo "  git-pilot                          # Commit with AI message"
+    echo "  git-pilot fix                      # Force conventional commit with 'fix' type"
+    echo "  git-pilot feat -B                  # Force 'feat' type, title only (no bullets)"
     echo "  git-pilot -a -c                    # Auto-stage + conventional commits"
     echo "  git-pilot -d                       # Dry run (preview only)"
     echo "  git-pilot resolve                  # Resolve merge conflicts"
@@ -274,6 +280,7 @@ load_config() {
                 language)      [ -z "$LANGUAGE" ] && LANGUAGE="$value" ;;
                 conventional)  [ "$CONVENTIONAL" = false ] && CONVENTIONAL="$value" ;;
                 emoji)         [ "$EMOJI" = false ] && EMOJI="$value" ;;
+                no_bullets)    [ "$NO_BULLETS" = false ] && NO_BULLETS="$value" ;;
                 skip_confirm)  [ "$SKIP_CONFIRM" = false ] && SKIP_CONFIRM="$value" ;;
             esac
         done < "$CONFIG_FILE"
@@ -303,6 +310,7 @@ auto_push=$AUTO_PUSH
 language=$LANGUAGE
 conventional=$CONVENTIONAL
 emoji=$EMOJI
+no_bullets=$NO_BULLETS
 skip_confirm=$SKIP_CONFIRM
 EOF
     chmod 600 "$CONFIG_FILE"
@@ -795,7 +803,11 @@ build_commit_prompt() {
     local prompt="You are a git commit message generator. Based on the following diff, write a commit message with a title and a description."
 
     if [ "$CONVENTIONAL" = true ]; then
-        prompt="$prompt Use Conventional Commits format (e.g. feat:, fix:, docs:, refactor:, chore:)."
+        if [ -n "$COMMIT_TYPE" ]; then
+            prompt="$prompt Use Conventional Commits format. The commit type MUST be '$COMMIT_TYPE' (e.g. $COMMIT_TYPE: description)."
+        else
+            prompt="$prompt Use Conventional Commits format (e.g. feat:, fix:, docs:, refactor:, chore:)."
+        fi
     fi
 
     if [ "$EMOJI" = true ]; then
@@ -806,7 +818,19 @@ build_commit_prompt() {
         prompt="$prompt Write the commit message in $LANGUAGE."
     fi
 
-    prompt="$prompt
+    if [ "$NO_BULLETS" = true ]; then
+        prompt="$prompt
+
+Rules:
+- Output ONLY the commit message, nothing else
+- Write ONLY a single-line summary title, max 72 characters, imperative mood
+- Do NOT include a description or bullet points, ONLY the title line
+- Do not wrap the message in quotes or backticks
+
+Diff:
+$diff"
+    else
+        prompt="$prompt
 
 Rules:
 - Output ONLY the commit message, nothing else
@@ -818,6 +842,7 @@ Rules:
 
 Diff:
 $diff"
+    fi
 
     echo "$prompt"
 }
@@ -1249,6 +1274,11 @@ if [ $# -gt 0 ]; then
             ACTION="$1"
             shift
             ;;
+        feat|fix|docs|refactor|chore|style|test|perf|ci|build|revert)
+            COMMIT_TYPE="$1"
+            CONVENTIONAL=true
+            shift
+            ;;
     esac
 fi
 
@@ -1305,6 +1335,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -y|--yes)
             SKIP_CONFIRM=true
+            shift
+            ;;
+        -B|--no-bullets)
+            NO_BULLETS=true
             shift
             ;;
         -v|--version)
