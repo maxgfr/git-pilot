@@ -96,10 +96,12 @@ stop_spinner() {
 
 cleanup() {
     stop_spinner
+    # Kill any child processes (e.g. claude, codex, curl subshells)
+    kill 0 2>/dev/null || true
 }
 
 trap 'cleanup' EXIT
-trap 'cleanup; exit 130' INT
+trap 'exit 130' INT
 
 print_banner() {
     echo -e "${CYAN}"
