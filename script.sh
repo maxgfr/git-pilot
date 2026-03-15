@@ -718,11 +718,10 @@ get_staged_diff() {
     diff=$(git diff --cached)
 
     if [ -z "$diff" ]; then
-        log_error "No staged changes found. Stage your changes with 'git add' or use --auto-stage."
-        exit 1
+        return 1
     fi
 
-    echo "$diff"
+    printf '%s\n' "$diff"
 }
 
 get_diff_budget() {
@@ -998,16 +997,29 @@ check_conflict_markers() {
     esac
 }
 
+push_if_needed() {
+    if [ "$AUTO_PUSH" = true ]; then
+        log_info "Pushing..."
+        if ! git push 2>&1; then
+            log_warn "Push rejected — pulling with rebase first..."
+            do_pull_rebase
+            log_info "Pushing again..."
+            git push
+        fi
+        log_success "Pushed!"
+    fi
+}
+
 do_commit() {
     check_git_repo
     check_conflict_markers
 
     local message
-    message=$(generate_commit_message) || exit 1
-
-    if [ -z "$message" ]; then
-        log_error "Failed to generate commit message."
-        exit 1
+    message=$(generate_commit_message)
+    if [ $? -ne 0 ] || [ -z "$message" ]; then
+        log_info "Nothing to commit."
+        push_if_needed
+        return 0
     fi
 
     echo ""
@@ -1025,17 +1037,7 @@ do_commit() {
     if ask_yes_no "Commit with this message?"; then
         git commit -m "$message"
         log_success "Committed!"
-
-        if [ "$AUTO_PUSH" = true ]; then
-            log_info "Pushing..."
-            if ! git push 2>&1; then
-                log_warn "Push rejected — pulling with rebase first..."
-                do_pull_rebase
-                log_info "Pushing again..."
-                git push
-            fi
-            log_success "Pushed!"
-        fi
+        push_if_needed
     else
         log_info "Commit cancelled."
     fi
