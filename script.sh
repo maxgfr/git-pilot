@@ -1065,8 +1065,7 @@ do_commit() {
 
     local message
     if ! message=$(generate_commit_message) || [ -z "$message" ]; then
-        push_if_needed
-        return 0
+        return 1
     fi
 
     echo ""
