@@ -30,7 +30,7 @@ SKIP_CONFIRM=false
 ACTION="commit"  # commit | setup | config | resolve | rebase
 
 # --- Colors ---
-if [ -t 1 ]; then
+if [ -t 2 ]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     BLUE='\033[0;34m'
@@ -94,7 +94,12 @@ stop_spinner() {
     fi
 }
 
-trap 'stop_spinner' EXIT
+cleanup() {
+    stop_spinner
+}
+
+trap 'cleanup' EXIT
+trap 'cleanup; exit 130' INT
 
 print_banner() {
     echo -e "${CYAN}"
@@ -268,8 +273,8 @@ load_config() {
             # Skip comments and empty lines
             [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
             # Trim whitespace
-            key=$(echo "$key" | xargs)
-            value=$(echo "$value" | xargs)
+            key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             case "$key" in
                 provider)      [ -z "$PROVIDER" ] && PROVIDER="$value" ;;
                 api_key)       [ -z "$API_KEY" ] && API_KEY="$value" ;;
@@ -501,7 +506,7 @@ call_ai_api() {
         exit 1
     fi
 
-    echo "$response"
+    printf '%s\n' "$response"
 }
 
 # --- CLI-based providers ---
@@ -527,7 +532,7 @@ call_claude_code() {
         exit 1
     fi
 
-    echo "$result"
+    printf '%s\n' "$result"
 }
 
 call_codex_cli() {
@@ -550,7 +555,7 @@ call_codex_cli() {
         exit 1
     fi
 
-    echo "$result"
+    printf '%s\n' "$result"
 }
 
 # --- API-based providers ---
@@ -581,10 +586,10 @@ call_anthropic() {
     local response_body
     response_body=$(echo "$result" | sed '$d')
 
-    if [ "$http_code" -ne 200 ]; then
+    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
         local error_msg
         error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Anthropic API error ($http_code): $error_msg"
+        log_error "Anthropic API error (${http_code:-no response}): $error_msg"
         exit 1
     fi
 
@@ -617,10 +622,10 @@ call_openai() {
     local response_body
     response_body=$(echo "$result" | sed '$d')
 
-    if [ "$http_code" -ne 200 ]; then
+    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
         local error_msg
         error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "OpenAI API error ($http_code): $error_msg"
+        log_error "OpenAI API error (${http_code:-no response}): $error_msg"
         exit 1
     fi
 
@@ -647,10 +652,10 @@ call_gemini() {
     local response_body
     response_body=$(echo "$result" | sed '$d')
 
-    if [ "$http_code" -ne 200 ]; then
+    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
         local error_msg
         error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Gemini API error ($http_code): $error_msg"
+        log_error "Gemini API error (${http_code:-no response}): $error_msg"
         exit 1
     fi
 
@@ -682,10 +687,10 @@ call_mistral() {
     local response_body
     response_body=$(echo "$result" | sed '$d')
 
-    if [ "$http_code" -ne 200 ]; then
+    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
         local error_msg
         error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Mistral API error ($http_code): $error_msg"
+        log_error "Mistral API error (${http_code:-no response}): $error_msg"
         exit 1
     fi
 
@@ -844,7 +849,7 @@ Diff:
 $diff"
     fi
 
-    echo "$prompt"
+    printf '%s\n' "$prompt"
 }
 
 generate_commit_message() {
@@ -864,9 +869,9 @@ generate_commit_message() {
     message=$(call_ai_api "$prompt") || return 1
 
     # Clean up: remove surrounding quotes/backticks if present
-    message=$(echo "$message" | sed 's/^[`"'"'"']*//;s/[`"'"'"']*$//')
+    message=$(printf '%s\n' "$message" | sed 's/^[`"'"'"']*//;s/[`"'"'"']*$//')
 
-    echo "$message"
+    printf '%s\n' "$message"
 }
 
 resolve_keep_both() {
@@ -1185,7 +1190,7 @@ Instructions:
             echo -e "${GREEN}─────────────────────────────────────${NC}"
 
             if ask_yes_no "Apply this resolution to $file?"; then
-                echo "$resolved" > "$file"
+                printf '%s\n' "$resolved" > "$file"
                 git add "$file"
                 log_success "Resolved and staged: $file"
             else
@@ -1286,14 +1291,17 @@ while [[ $# -gt 0 ]]; do
     key="$1"
     case $key in
         -p|--provider)
+            [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
             PROVIDER="$2"
             shift; shift
             ;;
         -m|--model)
+            [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
             MODEL="$2"
             shift; shift
             ;;
         --api-key)
+            [[ -z "${2:-}" ]] && { log_error "Option $1 requires an argument."; exit 1; }
             API_KEY="$2"
             shift; shift
             ;;
@@ -1318,6 +1326,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -l|--lang)
+            [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
             LANGUAGE="$2"
             shift; shift
             ;;
