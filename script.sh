@@ -9,7 +9,7 @@
 set -eo pipefail
 
 # --- Configuration & Defaults ---
-VERSION="1.12.1"
+VERSION="1.12.2"
 CONFIG_DIR="${GIT_PILOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/git-pilot}"
 CONFIG_FILE="$CONFIG_DIR/config"
 MAX_TOKENS=1024
