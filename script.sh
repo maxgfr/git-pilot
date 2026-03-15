@@ -766,6 +766,7 @@ get_staged_diff() {
     diff=$(git diff --cached)
 
     if [ -z "$diff" ]; then
+        log_error "No staged changes found. Stage your changes first with 'git add'."
         return 1
     fi
 
@@ -1063,9 +1064,7 @@ do_commit() {
     check_conflict_markers
 
     local message
-    message=$(generate_commit_message)
-    if [ $? -ne 0 ] || [ -z "$message" ]; then
-        log_info "Nothing to commit."
+    if ! message=$(generate_commit_message) || [ -z "$message" ]; then
         push_if_needed
         return 0
     fi
