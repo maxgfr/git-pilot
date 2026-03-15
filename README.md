@@ -70,6 +70,7 @@ git-pilot [command] [options]
 | Command   | Description                                    |
 |-----------|------------------------------------------------|
 | `commit`  | Generate AI commit message and commit (default)|
+| `<type>`  | Force conventional commit type (`feat`, `fix`, `docs`, `refactor`, `chore`, `style`, `test`, `perf`, `ci`, `build`, `revert`) |
 | `resolve` | Resolve merge conflicts with AI                |
 | `rebase`  | Pull --rebase with AI conflict resolution      |
 | `setup`   | Run interactive configuration wizard           |
@@ -88,6 +89,7 @@ git-pilot [command] [options]
 | `--conventional` | `-c` | Use Conventional Commits format |
 | `--emoji` | `-e` | Add emoji to commit message |
 | `--lang <code>` | `-l` | Language for commit message (e.g. `en`, `fr`, `es`) |
+| `--no-bullets` | `-B` | Title only, no bullet points in description |
 | `--yes` | `-y` | Skip confirmation prompts |
 | `--version` | `-v` | Show version |
 | `--help` | `-h` | Show help |
@@ -101,6 +103,10 @@ git-pilot
 
 # Auto-stage + conventional commits + emoji
 git-pilot -a -c -e
+
+# Force a conventional commit type
+git-pilot fix
+git-pilot feat -B    # 'feat' type, title only (no bullets)
 
 # Dry run (preview only)
 git-pilot -d
