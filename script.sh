@@ -66,13 +66,16 @@ log_error() {
     printf "${RED}[ERROR]${NC} %s\n" "$1" >&2
 }
 
-# Spinner for long-running operations
-SPINNER_PID=""
+# Process tracking via PID files (needed because subshells can't share variables with parent)
+_PIDDIR=$(mktemp -d)
+_SPINNER_PIDFILE="$_PIDDIR/spinner"
+_AI_PIDFILE="$_PIDDIR/ai"
 
 start_spinner() {
     local msg="$1"
     if [ ! -t 2 ]; then return; fi
     (
+        trap 'exit 0' TERM INT
         local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
         local i=0
         while true; do
@@ -81,27 +84,46 @@ start_spinner() {
             sleep 0.1
         done
     ) &
-    SPINNER_PID=$!
-    disown "$SPINNER_PID" 2>/dev/null
+    echo $! > "$_SPINNER_PIDFILE"
 }
 
 stop_spinner() {
-    if [ -n "$SPINNER_PID" ]; then
-        kill "$SPINNER_PID" 2>/dev/null
-        wait "$SPINNER_PID" 2>/dev/null || true
-        SPINNER_PID=""
-        printf "\r\033[K" >&2
+    if [ -f "$_SPINNER_PIDFILE" ]; then
+        local pid
+        pid=$(cat "$_SPINNER_PIDFILE")
+        rm -f "$_SPINNER_PIDFILE"
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null || true
+        fi
+    fi
+    printf "\r\033[K" >&2
+}
+
+_save_ai_pid() {
+    echo "$1" > "$_AI_PIDFILE"
+}
+
+kill_ai() {
+    if [ -f "$_AI_PIDFILE" ]; then
+        local pid
+        pid=$(cat "$_AI_PIDFILE")
+        rm -f "$_AI_PIDFILE"
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null || true
+        fi
     fi
 }
 
 cleanup() {
+    kill_ai
     stop_spinner
-    # Kill any child processes (e.g. claude, codex, curl subshells)
-    kill 0 2>/dev/null || true
+    rm -rf "$_PIDDIR" 2>/dev/null
 }
 
 trap 'cleanup' EXIT
-trap 'exit 130' INT
+trap 'cleanup; exit 130' INT
 
 print_banner() {
     echo -e "${CYAN}"
@@ -513,6 +535,30 @@ call_ai_api() {
 
 # --- CLI-based providers ---
 
+# Run a command in the background so Ctrl+C can interrupt via the INT trap.
+# Usage: run_interruptible result_var command [args...]
+run_interruptible() {
+    local _var="$1"
+    shift
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    "$@" > "$tmpfile" 2>/dev/null &
+    local pid=$!
+    _save_ai_pid "$pid"
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    rm -f "$_AI_PIDFILE"
+
+    if [ $rc -ne 0 ]; then
+        rm -f "$tmpfile"
+        return $rc
+    fi
+
+    eval "$_var=\$(cat \"\$tmpfile\")"
+    rm -f "$tmpfile"
+}
+
 call_claude_code() {
     local prompt="$1"
     local result
@@ -524,7 +570,7 @@ call_claude_code() {
 
     # Unset CLAUDECODE to allow running inside Claude Code sessions
     # shellcheck disable=SC2086
-    result=$(unset CLAUDECODE; claude -p "$prompt" $model_flag 2>/dev/null) || {
+    run_interruptible result env -u CLAUDECODE claude -p "$prompt" $model_flag || {
         log_error "Claude Code CLI failed. Is 'claude' installed and authenticated?"
         exit 1
     }
@@ -547,7 +593,7 @@ call_codex_cli() {
     fi
 
     # shellcheck disable=SC2086
-    result=$(codex -q "$prompt" $model_flag 2>/dev/null) || {
+    run_interruptible result codex -q "$prompt" $model_flag || {
         log_error "Codex CLI failed. Is 'codex' installed and authenticated?"
         exit 1
     }
@@ -575,13 +621,13 @@ call_anthropic() {
             messages: [{ role: "user", content: $prompt }]
         }')
 
-    local result
-    result=$(curl -s -w "\n%{http_code}" \
+    local result=""
+    run_interruptible result curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -H "x-api-key: $API_KEY" \
         -H "anthropic-version: 2023-06-01" \
         -d "$body" \
-        "https://api.anthropic.com/v1/messages")
+        "https://api.anthropic.com/v1/messages"
 
     local http_code
     http_code=$(echo "$result" | tail -n1)
@@ -612,12 +658,12 @@ call_openai() {
             messages: [{ role: "user", content: $prompt }]
         }')
 
-    local result
-    result=$(curl -s -w "\n%{http_code}" \
+    local result=""
+    run_interruptible result curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $API_KEY" \
         -d "$body" \
-        "https://api.openai.com/v1/chat/completions")
+        "https://api.openai.com/v1/chat/completions"
 
     local http_code
     http_code=$(echo "$result" | tail -n1)
@@ -643,11 +689,11 @@ call_gemini() {
             contents: [{ parts: [{ text: $prompt }] }]
         }')
 
-    local result
-    result=$(curl -s -w "\n%{http_code}" \
+    local result=""
+    run_interruptible result curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -d "$body" \
-        "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}")
+        "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}"
 
     local http_code
     http_code=$(echo "$result" | tail -n1)
@@ -677,12 +723,12 @@ call_mistral() {
             messages: [{ role: "user", content: $prompt }]
         }')
 
-    local result
-    result=$(curl -s -w "\n%{http_code}" \
+    local result=""
+    run_interruptible result curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $API_KEY" \
         -d "$body" \
-        "https://api.mistral.ai/v1/chat/completions")
+        "https://api.mistral.ai/v1/chat/completions"
 
     local http_code
     http_code=$(echo "$result" | tail -n1)
