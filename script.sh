@@ -542,8 +542,10 @@ run_interruptible() {
     shift
     local tmpfile
     tmpfile=$(mktemp)
+    local errfile
+    errfile=$(mktemp)
 
-    "$@" > "$tmpfile" 2>/dev/null &
+    "$@" > "$tmpfile" 2>"$errfile" < /dev/null &
     local pid=$!
     _save_ai_pid "$pid"
     wait "$pid" 2>/dev/null
@@ -551,12 +553,16 @@ run_interruptible() {
     rm -f "$_AI_PIDFILE"
 
     if [ $rc -ne 0 ]; then
-        rm -f "$tmpfile"
+        # Show stderr for debugging if command failed
+        local err_content
+        err_content=$(cat "$errfile" 2>/dev/null)
+        [ -n "$err_content" ] && log_error "$err_content"
+        rm -f "$tmpfile" "$errfile"
         return $rc
     fi
 
     eval "$_var=\$(cat \"\$tmpfile\")"
-    rm -f "$tmpfile"
+    rm -f "$tmpfile" "$errfile"
 }
 
 call_claude_code() {
@@ -568,9 +574,9 @@ call_claude_code() {
         model_flag="--model $MODEL"
     fi
 
-    # Unset CLAUDECODE to allow running inside Claude Code sessions
+    # Unset all Claude Code env vars to allow running inside Claude Code sessions
     # shellcheck disable=SC2086
-    run_interruptible result env -u CLAUDECODE claude -p "$prompt" $model_flag || {
+    run_interruptible result env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p "$prompt" --no-session-persistence $model_flag || {
         log_error "Claude Code CLI failed. Is 'claude' installed and authenticated?"
         exit 1
     }
