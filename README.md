@@ -7,7 +7,7 @@ AI-powered git automation: smart commits, conflict resolution, and auto-rebase. 
 
 ## Features
 
-- **AI commit messages** — Generate meaningful commit messages (title + description) from your staged diff
+- **AI commit messages** — Generate meaningful commit messages from your staged diff (title only by default, optional bullet points with `--bullets`)
 - **Multi-provider** — Claude Code & Codex (CLI), Anthropic, OpenAI, Gemini & Mistral (API)
 - **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
 - **Budget-friendly defaults** — Uses cheap/mini models by default (`haiku`, `gpt-5-mini`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
@@ -152,6 +152,7 @@ auto_push=false
 language=en
 conventional=true
 emoji=false
+bullets=false
 skip_confirm=false
 ```
 
