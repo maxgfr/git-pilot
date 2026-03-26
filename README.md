@@ -89,7 +89,8 @@ git-pilot [command] [options]
 | `--conventional` | `-c` | Use Conventional Commits format |
 | `--emoji` | `-e` | Add emoji to commit message |
 | `--lang <code>` | `-l` | Language for commit message (e.g. `en`, `fr`, `es`) |
-| `--no-bullets` | `-B` | Title only, no bullet points in description |
+| `--bullets` | `-B` | Include bullet points in description |
+| `--no-bullets` | | Title only, no bullet points (default) |
 | `--yes` | `-y` | Skip confirmation prompts |
 | `--version` | `-v` | Show version |
 | `--help` | `-h` | Show help |
@@ -106,7 +107,7 @@ git-pilot -a -c -e
 
 # Force a conventional commit type
 git-pilot fix
-git-pilot feat -B    # 'feat' type, title only (no bullets)
+git-pilot feat -B    # 'feat' type, with bullet points
 
 # Dry run (preview only)
 git-pilot -d

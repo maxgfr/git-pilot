@@ -25,7 +25,7 @@ CONVENTIONAL=false
 COMMIT_TYPE=""    # forced conventional commit type (feat, fix, docs, etc.)
 EMOJI=false
 LANGUAGE=""
-NO_BULLETS=true
+BULLETS=false
 SKIP_CONFIRM=false
 ACTION="commit"  # commit | setup | config | resolve | rebase
 
@@ -159,8 +159,8 @@ print_usage() {
     echo "  -c, --conventional       Use Conventional Commits format"
     echo "  -e, --emoji              Add emoji to commit message"
     echo "  -l, --lang <code>        Language for commit message (e.g. en, fr, es)"
-    echo "  -B, --no-bullets         Title only, no bullet points in description (default)"
-    echo "      --bullets            Include bullet points in description"
+    echo "  -B, --bullets            Include bullet points in description"
+    echo "      --no-bullets         Title only, no bullet points (default)"
     echo "  -y, --yes                Skip confirmation prompts"
     echo "  -v, --version            Show version"
     echo "  -h, --help               Show this help message"
@@ -168,7 +168,7 @@ print_usage() {
     echo "Examples:"
     echo "  git-pilot                          # Commit with AI message"
     echo "  git-pilot fix                      # Force conventional commit with 'fix' type"
-    echo "  git-pilot feat -B                  # Force 'feat' type, title only (no bullets)"
+    echo "  git-pilot feat -B                  # Force 'feat' type, with bullet points"
     echo "  git-pilot -a -c                    # Auto-stage + conventional commits"
     echo "  git-pilot -d                       # Dry run (preview only)"
     echo "  git-pilot resolve                  # Resolve merge conflicts"
@@ -310,7 +310,7 @@ load_config() {
                 language)      [ -z "$LANGUAGE" ] && LANGUAGE="$value" ;;
                 conventional)  [ "$CONVENTIONAL" = false ] && CONVENTIONAL="$value" ;;
                 emoji)         [ "$EMOJI" = false ] && EMOJI="$value" ;;
-                no_bullets)    [ "$NO_BULLETS" = true ] && NO_BULLETS="$value" ;;
+                bullets)       [ "$BULLETS" = false ] && BULLETS="$value" ;;
                 skip_confirm)  [ "$SKIP_CONFIRM" = false ] && SKIP_CONFIRM="$value" ;;
             esac
         done < "$CONFIG_FILE"
@@ -340,7 +340,7 @@ auto_push=$AUTO_PUSH
 language=$LANGUAGE
 conventional=$CONVENTIONAL
 emoji=$EMOJI
-no_bullets=$NO_BULLETS
+bullets=$BULLETS
 skip_confirm=$SKIP_CONFIRM
 EOF
     chmod 600 "$CONFIG_FILE"
@@ -438,9 +438,9 @@ run_setup() {
     fi
 
     if ask_yes_no "Include bullet points in commit description?"; then
-        NO_BULLETS=false
+        BULLETS=true
     else
-        NO_BULLETS=true
+        BULLETS=false
     fi
 
     if ask_yes_no "Skip confirmation prompts? (auto-accept all y/N prompts)"; then
@@ -493,7 +493,7 @@ show_config() {
     printf "  %-16s %s\n" "Auto-push:" "$AUTO_PUSH"
     printf "  %-16s %s\n" "Conventional:" "$CONVENTIONAL"
     printf "  %-16s %s\n" "Emoji:" "$EMOJI"
-    printf "  %-16s %s\n" "Bullets:" "$([ "$NO_BULLETS" = true ] && echo "false" || echo "true")"
+    printf "  %-16s %s\n" "Bullets:" "$BULLETS"
     printf "  %-16s %s\n" "Skip confirm:" "$SKIP_CONFIRM"
     echo -e "${CYAN}─────────────────────────────────────${NC}"
     printf "  %-16s %s\n" "Config file:" "$CONFIG_FILE"
@@ -885,7 +885,7 @@ build_commit_prompt() {
         prompt="$prompt Write the commit message in $LANGUAGE."
     fi
 
-    if [ "$NO_BULLETS" = true ]; then
+    if [ "$BULLETS" != true ]; then
         prompt="$prompt
 
 Rules:
@@ -1408,12 +1408,12 @@ while [[ $# -gt 0 ]]; do
             SKIP_CONFIRM=true
             shift
             ;;
-        -B|--no-bullets)
-            NO_BULLETS=true
+        -B|--bullets)
+            BULLETS=true
             shift
             ;;
-        --bullets)
-            NO_BULLETS=false
+        --no-bullets)
+            BULLETS=false
             shift
             ;;
         -v|--version)
