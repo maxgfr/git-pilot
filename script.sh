@@ -17,6 +17,7 @@ MAX_TOKENS=1024
 # --- Runtime state (overridable by CLI flags) ---
 PROVIDER=""
 MODEL=""
+MODEL_EXPLICIT=false
 API_KEY=""
 DRY_RUN=false
 AUTO_STAGE=false
@@ -351,7 +352,7 @@ get_default_model() {
     local p="$1"
     case "$p" in
         claude-code) echo "haiku" ;;
-        codex)       echo "gpt-5-mini" ;;
+        codex)       echo "" ;;
         anthropic)   echo "claude-haiku-4-5" ;;
         openai)      echo "gpt-5-mini" ;;
         gemini)      echo "gemini-2.5-flash-lite" ;;
@@ -473,6 +474,7 @@ show_config() {
     # Apply defaults for display
     local p="${PROVIDER:-claude-code}"
     local m="${MODEL:-$(get_default_model "$p")}"
+    [[ "$p" == "codex" ]] && m=""
     local l="${LANGUAGE:-en}"
 
     echo ""
@@ -544,16 +546,25 @@ call_ai_api() {
 # --- CLI-based providers ---
 
 # Run a command in the background so Ctrl+C can interrupt via the INT trap.
-# Usage: run_interruptible result_var command [args...]
+# Usage: run_interruptible result_var stdin_data command [args...]
 run_interruptible() {
     local _var="$1"
-    shift
+    local _stdin="$2"
+    shift 2
     local tmpfile
-    tmpfile=$(mktemp)
+    tmpfile=$(mktemp "$_PIDDIR/output.XXXXXX")
     local errfile
-    errfile=$(mktemp)
+    errfile=$(mktemp "$_PIDDIR/error.XXXXXX")
+    local stdinfile=""
 
-    "$@" > "$tmpfile" 2>"$errfile" < /dev/null &
+    if [ -n "$_stdin" ]; then
+        stdinfile=$(mktemp "$_PIDDIR/input.XXXXXX")
+        chmod 600 "$stdinfile"
+        printf '%s' "$_stdin" > "$stdinfile"
+        "$@" > "$tmpfile" 2>"$errfile" < "$stdinfile" &
+    else
+        "$@" > "$tmpfile" 2>"$errfile" < /dev/null &
+    fi
     local pid=$!
     _save_ai_pid "$pid"
     wait "$pid" 2>/dev/null
@@ -566,11 +577,13 @@ run_interruptible() {
         err_content=$(cat "$errfile" 2>/dev/null)
         [ -n "$err_content" ] && log_error "$err_content"
         rm -f "$tmpfile" "$errfile"
+        [ -n "$stdinfile" ] && rm -f "$stdinfile"
         return $rc
     fi
 
     eval "$_var=\$(cat \"\$tmpfile\")"
     rm -f "$tmpfile" "$errfile"
+    [ -n "$stdinfile" ] && rm -f "$stdinfile"
 }
 
 call_claude_code() {
@@ -584,7 +597,7 @@ call_claude_code() {
 
     # Unset all Claude Code env vars to allow running inside Claude Code sessions
     # shellcheck disable=SC2086
-    run_interruptible result env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p "$prompt" --no-session-persistence $model_flag || {
+    run_interruptible result "" env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p "$prompt" --no-session-persistence $model_flag || {
         log_error "Claude Code CLI failed. Is 'claude' installed and authenticated?"
         exit 1
     }
@@ -600,14 +613,13 @@ call_claude_code() {
 call_codex_cli() {
     local prompt="$1"
     local result
-    local model_flag=""
+    local codex_args=(exec --ephemeral -s read-only)
 
     if [ -n "$MODEL" ]; then
-        model_flag="--model $MODEL"
+        codex_args+=(-m "$MODEL")
     fi
 
-    # shellcheck disable=SC2086
-    run_interruptible result codex -q "$prompt" $model_flag || {
+    run_interruptible result "$prompt" codex "${codex_args[@]}" - || {
         log_error "Codex CLI failed. Is 'codex' installed and authenticated?"
         exit 1
     }
@@ -636,7 +648,7 @@ call_anthropic() {
         }')
 
     local result=""
-    run_interruptible result curl -s -w "\n%{http_code}" \
+    run_interruptible result "" curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -H "x-api-key: $API_KEY" \
         -H "anthropic-version: 2023-06-01" \
@@ -673,7 +685,7 @@ call_openai() {
         }')
 
     local result=""
-    run_interruptible result curl -s -w "\n%{http_code}" \
+    run_interruptible result "" curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $API_KEY" \
         -d "$body" \
@@ -704,7 +716,7 @@ call_gemini() {
         }')
 
     local result=""
-    run_interruptible result curl -s -w "\n%{http_code}" \
+    run_interruptible result "" curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -d "$body" \
         "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}"
@@ -738,7 +750,7 @@ call_mistral() {
         }')
 
     local result=""
-    run_interruptible result curl -s -w "\n%{http_code}" \
+    run_interruptible result "" curl -s -w "\n%{http_code}" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $API_KEY" \
         -d "$body" \
@@ -1360,6 +1372,7 @@ while [[ $# -gt 0 ]]; do
         -m|--model)
             [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
             MODEL="$2"
+            MODEL_EXPLICIT=true
             shift; shift
             ;;
         --api-key)
@@ -1467,7 +1480,9 @@ case "$PROVIDER" in
 esac
 
 # Default model per provider
-if [ -z "$MODEL" ]; then
+if [ "$PROVIDER" = "codex" ] && [ "$MODEL_EXPLICIT" = false ]; then
+    MODEL=""
+elif [ -z "$MODEL" ]; then
     MODEL=$(get_default_model "$PROVIDER")
 fi
 

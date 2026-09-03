@@ -10,7 +10,7 @@ AI-powered git automation: smart commits, conflict resolution, and auto-rebase. 
 - **AI commit messages** — Generate meaningful commit messages from your staged diff (title only by default, optional bullet points with `--bullets`)
 - **Multi-provider** — Claude Code & Codex (CLI), Anthropic, OpenAI, Gemini & Mistral (API)
 - **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
-- **Budget-friendly defaults** — Uses cheap/mini models by default (`haiku`, `gpt-5-mini`, `gemini-2.5-flash-lite`, `mistral-small-latest`)
+- **Budget-friendly defaults** — Uses compact defaults for API providers while Codex follows your CLI configuration
 - **Smart diff truncation** — Prioritizes small file diffs to maximize info sent to the AI (16K chars budget)
 - **Conflict resolution** — AI-powered merge conflict resolution
 - **Auto-rebase** — `pull --rebase` with automatic conflict resolution
@@ -81,7 +81,7 @@ git-pilot [command] [options]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral` |
-| `--model <name>` | `-m` | Model name (e.g. `haiku`, `gpt-5-mini`, `claude-haiku-4-5`) |
+| `--model <name>` | `-m` | Optional model override (Codex otherwise uses its CLI configuration) |
 | `--api-key <key>` | | API key (for API providers: anthropic, openai, gemini, mistral) |
 | `--dry-run` | `-d` | Preview commit message without committing |
 | `--auto-stage` | `-a` | Stage all changes before commit |
@@ -114,6 +114,9 @@ git-pilot -d
 
 # Use Codex CLI
 git-pilot -p codex
+
+# Override the configured Codex model for one invocation
+git-pilot -p codex -m <model-id>
 
 # Use Anthropic API
 git-pilot -p anthropic
@@ -170,19 +173,20 @@ API keys can be provided via environment variables (fallback for API providers):
 | Mistral   | `MISTRAL_API_KEY`    |
 
 CLI providers (`claude-code`, `codex`) don't need API keys — they use their own authentication.
+Codex runs non-interactively in an ephemeral, read-only sandbox; only its final response is used by git-pilot.
 
 ## Supported Providers
 
 | Provider | Type | Default Model | Cost |
 |----------|------|---------------|------|
 | `claude-code` | CLI | `haiku` | Free (uses your Claude subscription) |
-| `codex` | CLI | `gpt-5-mini` | Free (uses your OpenAI auth) |
+| `codex` | CLI | Codex configuration | Uses your Codex authentication |
 | `anthropic` | API | `claude-haiku-4-5` | ~$1.00/M input tokens |
 | `openai` | API | `gpt-5-mini` | ~$0.25/M input tokens |
 | `gemini` | API | `gemini-2.5-flash-lite` | ~$0.075/M input tokens |
 | `mistral` | API | `mistral-small-latest` | ~$0.06/M input tokens |
 
-All default models are cheap/mini models — more than enough for generating commit messages.
+API-provider defaults favor compact models. CLI providers can be overridden with `--model`.
 
 ## License
 
