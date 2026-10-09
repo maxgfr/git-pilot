@@ -39,6 +39,12 @@ cat > "$CODEX_STDIN_FILE"
 printf '%s\n' "fix: generate a safe Codex commit message"
 MOCK_CODEX
 chmod +x "$TEST_DIR/bin/codex"
+cat > "$TEST_DIR/bin/claude" <<'MOCK_CLAUDE'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CLAUDE_ARGS_FILE"
+printf '%s\n' "fix: generate a safe Claude Code commit message"
+MOCK_CLAUDE
+chmod +x "$TEST_DIR/bin/claude"
 
 git -C "$TEST_DIR/repo" init -q -b main
 git -C "$TEST_DIR/repo" config user.name "Pilot Tester"
@@ -88,6 +94,20 @@ assert_not_contains "codex ignores a saved model without --model" "$codex_defaul
 config_output=$(GIT_PILOT_CONFIG_DIR="$TEST_DIR/config" "$GIT_PILOT" config 2>&1)
 assert_contains "codex config displays CLI provider default" "$config_output" "<provider default>"
 assert_not_contains "codex config hides ignored saved model" "$config_output" "stale-config-model"
+
+output=$(cd "$TEST_DIR/repo" && \
+    CLAUDE_ARGS_FILE="$TEST_DIR/claude-args" \
+    GIT_PILOT_CONFIG_DIR="$TEST_DIR/config" \
+    PATH="$TEST_DIR/bin:$PATH" \
+    "$GIT_PILOT" --provider claude-code --model haiku --dry-run --yes 2>&1)
+result_code=$?
+claude_args=$(cat "$TEST_DIR/claude-args")
+
+assert_contains "claude-code command succeeds" "$result_code" "0"
+assert_contains "claude-code output is used" "$output" "fix: generate a safe Claude Code commit message"
+assert_not_contains "claude-code success reports no failure" "$output" "Claude Code CLI failed"
+assert_contains "claude-code runs in print mode" "$claude_args" "-p"
+assert_contains "claude-code model override is forwarded" "$claude_args" "haiku"
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 exit "$FAIL"

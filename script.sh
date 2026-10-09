@@ -583,7 +583,9 @@ run_interruptible() {
 
     eval "$_var=\$(cat \"\$tmpfile\")"
     rm -f "$tmpfile" "$errfile"
-    [ -n "$stdinfile" ] && rm -f "$stdinfile"
+    if [ -n "$stdinfile" ]; then
+        rm -f "$stdinfile"
+    fi
 }
 
 call_claude_code() {
