@@ -511,7 +511,7 @@ cmd_commit_context() {
     require_no_conflicts
 
     if [ "$auto_stage" = true ]; then
-        git add -A
+        git add -A || die "git add failed."
         log_info "Staged all changes."
     fi
 
@@ -762,6 +762,8 @@ cmd_mark_resolved() {
     [ $# -gt 0 ] || die "Usage: mark-resolved <file>..."
     local file failed=false
     for file in "$@"; do
+        # A directory would be staged whole, without its files being checked.
+        [ ! -d "$file" ] || die "mark-resolved takes files, not directories: $file"
         if [ -f "$file" ] && file_has_markers "$file"; then
             log_error "Conflict markers remain in: $file"
             failed=true
@@ -770,7 +772,7 @@ cmd_mark_resolved() {
     [ "$failed" = false ] || exit "$EXIT_CONFLICTS"
 
     for file in "$@"; do
-        git add -A -- "$file"
+        git add -A -- "$file" || die "Could not stage: $file"
         log_success "Staged: $file"
     done
 }
@@ -815,7 +817,7 @@ cmd_rebase() {
             ;;
         abort)
             rebase_in_progress || die "No rebase in progress."
-            git rebase --abort >&2
+            git rebase --abort >&2 || die "git rebase --abort failed."
             log_success "Rebase aborted."
             ;;
         *)

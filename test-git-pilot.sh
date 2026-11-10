@@ -226,6 +226,14 @@ assert_eq "take both keeps both sides" "$(cat "$c/conflict.txt")" $'line 1\nours
 run "$c" take sideways conflict.txt
 assert_eq "take rejects unknown strategies" "$RC" "1"
 
+# mark-resolved only vouches for files it has checked.
+c=$(conflicted_repo directory)
+run "$c" mark-resolved .
+assert_eq "mark-resolved refuses a directory" "$RC" "1"
+assert_eq "a refused directory leaves the conflict unstaged" "$(git -C "$c" diff --name-only --diff-filter=U)" "conflict.txt"
+run "$c" mark-resolved missing.txt
+assert_eq "mark-resolved on an unknown path exits 1" "$RC" "1"
+
 # Conflicts without markers: binary files, and files deleted on one side.
 c=$(binary_conflicted_repo binary-theirs)
 run "$c" take theirs blob.bin
