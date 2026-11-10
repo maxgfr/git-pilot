@@ -110,6 +110,8 @@ During a rebase, "ours" is the upstream and "theirs" is your commit being replay
 | `GIT_PILOT_DIFF_BUDGET` | `16000` | Max diff characters printed by `commit-context` and `branch-context` |
 | `GIT_PILOT_MAX_FILE_SIZE` | `5242880` | Staged file size (bytes) flagged as large |
 
+Both must be non-negative integers; any other value (`16k`, `5MB`) is an error.
+
 ## Migrating from 1.x
 
 Version 2 removes the built-in AI providers (`claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral`), along with `setup`, `config`, API keys, and the provider and formatting flags. The AI work now happens in the agent that runs the skill.

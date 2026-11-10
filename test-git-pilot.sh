@@ -47,6 +47,15 @@ run() {
     ERR=$(cat "$TEST_DIR/stderr")
 }
 
+# run_env <dir> <NAME=value> <args...>: run with one extra environment variable.
+run_env() {
+    local dir="$1" assignment="$2"
+    shift 2
+    OUT=$(cd "$dir" && env "$assignment" "$GIT_PILOT" "$@" 2>"$TEST_DIR/stderr" </dev/null)
+    RC=$?
+    ERR=$(cat "$TEST_DIR/stderr")
+}
+
 # run_stdin <dir> <stdin> <args...>
 run_stdin() {
     local dir="$1" input="$2"
@@ -141,6 +150,17 @@ run "$big" commit-context
 assert_contains "large diff is truncated" "$OUT" "large file(s) omitted"
 assert_contains "small files survive truncation" "$OUT" "+small change"
 if [ "${#OUT}" -lt 18000 ]; then pass "truncated output stays near budget"; else fail "truncated output stays near budget (${#OUT} chars)"; fi
+
+run_env "$big" GIT_PILOT_DIFF_BUDGET=16k commit-context
+assert_eq "an invalid diff budget exits 1" "$RC" "1"
+assert_contains "an invalid diff budget is named" "$ERR" "GIT_PILOT_DIFF_BUDGET must be"
+assert_eq "an invalid diff budget prints no partial context" "$OUT" ""
+
+# A budget smaller than the truncation notice used to crash on a negative length.
+run_env "$big" GIT_PILOT_DIFF_BUDGET=50 commit-context
+assert_eq "a tiny diff budget still succeeds" "$RC" "0"
+assert_contains "a tiny diff budget still reports the omission" "$OUT" "omitted"
+assert_not_contains "a tiny diff budget prints no diff lines" "$OUT" "+large line number"
 
 # --- commit ------------------------------------------------------------------
 
@@ -395,8 +415,13 @@ git -C "$guard" reset -q .env.example
 
 head -c 2048 /dev/zero > "$guard/blob.bin"
 git -C "$guard" add blob.bin
-OUT=$(cd "$guard" && GIT_PILOT_MAX_FILE_SIZE=1024 "$GIT_PILOT" commit-context 2>/dev/null)
+run_env "$guard" GIT_PILOT_MAX_FILE_SIZE=1024 commit-context
 assert_contains "commit-context flags large files" "$OUT" "large-file: blob.bin (2048 bytes)"
+
+# An invalid size limit used to disable the large-file check silently.
+run_env "$guard" GIT_PILOT_MAX_FILE_SIZE=1k commit -m "chore: add blob" --dry-run
+assert_eq "an invalid size limit exits 1" "$RC" "1"
+assert_contains "an invalid size limit is named" "$ERR" "GIT_PILOT_MAX_FILE_SIZE must be"
 
 # --- conventions -------------------------------------------------------------
 

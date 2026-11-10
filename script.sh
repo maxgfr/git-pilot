@@ -95,6 +95,7 @@ Exit codes:
 Environment:
   GIT_PILOT_DIFF_BUDGET               Max diff characters printed (default 16000)
   GIT_PILOT_MAX_FILE_SIZE             Staged file size flagged as large, in bytes (default 5242880)
+  Both must be non-negative integers; any other value is an error.
 EOF
 }
 
@@ -162,17 +163,33 @@ require_no_conflicts() {
     exit "$EXIT_CONFLICTS"
 }
 
-get_diff_budget() {
-    # Max chars of diff printed for the agent (~4K tokens)
-    echo "${GIT_PILOT_DIFF_BUDGET:-16000}"
+# Print the setting held by environment variable $1 (default $2), which must be
+# a non-negative integer. A bad value is an error rather than a silent default:
+# it would otherwise switch off the check it configures.
+int_setting() {
+    local name="$1" value
+    value="${!name:-$2}"
+    case "$value" in
+        ''|*[!0-9]*) die "$name must be a non-negative integer, got: $value" ;;
+    esac
+    [ "${#value}" -le 15 ] || die "$name is too large: $value"
+    printf '%s\n' "$((10#$value))"
+}
+
+# Read once in main, before any command runs.
+DIFF_BUDGET=16000       # Max chars of diff printed for the agent (~4K tokens)
+MAX_FILE_SIZE=5242880   # Staged file size flagged as large, in bytes
+
+load_settings() {
+    DIFF_BUDGET=$(int_setting GIT_PILOT_DIFF_BUDGET "$DIFF_BUDGET") || exit "$EXIT_ERROR"
+    MAX_FILE_SIZE=$(int_setting GIT_PILOT_MAX_FILE_SIZE "$MAX_FILE_SIZE") || exit "$EXIT_ERROR"
 }
 
 # Usage: truncate_diff <diff> <stat shown when the diff is truncated>
 truncate_diff() {
     local diff="$1"
     local stat="$2"
-    local budget
-    budget=$(get_diff_budget)
+    local budget="$DIFF_BUDGET"
     local length=${#diff}
 
     # Fits in budget — send as-is
@@ -188,6 +205,7 @@ truncate_diff() {
     fi
     local footer=$'\n\n'"[... ${length} chars total, truncated to fit budget]"
     local available=$((budget - ${#header} - ${#footer}))
+    [ "$available" -gt 0 ] || available=0
 
     # Split diff by file (each starts with "diff --git"), collect into temp files
     local tmpdir
@@ -387,7 +405,7 @@ take_whole_side() {
 
 # Print one line per staged file that looks like a secret or is too large.
 staged_findings() {
-    local max_size="${GIT_PILOT_MAX_FILE_SIZE:-5242880}"
+    local max_size="$MAX_FILE_SIZE"
     local file base size
 
     while IFS= read -r -d '' file; do
@@ -821,6 +839,7 @@ main() {
     esac
 
     check_git_repo
+    load_settings
 
     case "$command" in
         status)         cmd_status "$@" ;;
