@@ -670,8 +670,15 @@ cmd_commit_context() {
 
 # Print "status<TAB>+added<TAB>-deleted<TAB>path" lines for a diff (extra args go to git diff).
 diff_summary() {
+    # git reports an unmerged file twice in the working tree diff ("U", then "M"
+    # with the line counts): fold the counts into the "U" line.
     paste <(git_plain diff --name-status "$@" | cut -f1) <(git_plain diff --numstat "$@") |
-        awk -F'\t' 'NF { printf "  %s +%s -%s %s\n", $1, $2, $3, $4 }'
+        awk -F'\t' '
+            NF {
+                if (($4 in row) && status[row[$4]] == "U") { added[row[$4]] = $2; deleted[row[$4]] = $3; next }
+                n++; row[$4] = n; status[n] = $1; added[n] = $2; deleted[n] = $3; path[n] = $4
+            }
+            END { for (i = 1; i <= n; i++) printf "  %s +%s -%s %s\n", status[i], added[i], deleted[i], path[i] }'
 }
 
 # Usage: file_sizes <root> <absolute path>...

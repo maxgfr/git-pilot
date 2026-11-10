@@ -564,6 +564,12 @@ assert_contains "status shows staged files with counts" "$OUT" "A +1 -0 staged.t
 assert_contains "status shows unstaged files with counts" "$OUT" "M +1 -0 tracked.txt"
 assert_contains "status shows untracked files with sizes" "$OUT" "4 untracked.txt"
 
+# An unmerged file appears once per section, with its line counts.
+uc=$(conflicted_repo status-unmerged)
+run "$uc" status
+assert_contains "status shows an unmerged file with its line counts" "$OUT" "U +4 -0 conflict.txt"
+assert_not_contains "status does not repeat an unmerged file as modified" "$OUT" "M +4 -0 conflict.txt"
+
 git -C "$st" checkout -q --detach
 run "$st" status
 assert_contains "status names a detached HEAD" "$OUT" "Branch: detached HEAD"
