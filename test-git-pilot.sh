@@ -257,6 +257,27 @@ run_stdin "$c" "Merge branch 'other'" commit -F -
 assert_eq "merge commit succeeds after resolution" "$RC" "0"
 assert_eq "merge commit has two parents" "$(git -C "$c" rev-list --parents -1 HEAD | wc -w | xargs)" "3"
 
+# --- Running from a subdirectory ---------------------------------------------
+
+s=$(conflicted_repo subdir "pkg/conflict.txt")
+printf '%s\n' "<<<<<<< HEAD" "x" "=======" "y" ">>>>>>> other" > "$s/root.txt"
+git -C "$s" add root.txt
+run "$s/pkg" conflicts
+assert_eq "conflicts lists each file once, from the repository root" "$OUT" $'pkg/conflict.txt\nroot.txt'
+run "$s/pkg" take ours conflict.txt
+assert_eq "take accepts a path relative to the current directory" "$RC" "0"
+run "$s/pkg" commit -m "merge" --dry-run
+assert_eq "commit sees conflict markers outside the current directory (exit 2)" "$RC" "2"
+git -C "$s" rm -q --cached root.txt
+rm "$s/root.txt"
+printf '{}\n' > "$s/.releaserc"
+printf '%s\n' "new" > "$s/pkg/new.txt"
+git -C "$s" add pkg/new.txt
+run "$s/pkg" commit-context
+assert_contains "conventions are detected from a subdirectory" "$OUT" "semantic-release (.releaserc)"
+run "$s/pkg" status
+assert_contains "status lists untracked files outside the current directory" "$OUT" "3 .releaserc"
+
 # --- rebase start / continue / abort -----------------------------------------
 
 remote="$TEST_DIR/remote.git"
@@ -395,6 +416,9 @@ assert_contains "branch-context includes commit bodies" "$OUT" "Explain why the 
 assert_contains "branch-context includes the PR template" "$OUT" "Pull request template (.github/pull_request_template.md)"
 assert_contains "branch-context prints the diff" "$OUT" "+feature"
 assert_contains "branch-context warns without upstream" "$ERR" "no upstream"
+mkdir -p "$bc/nested"
+run "$bc/nested" branch-context
+assert_contains "branch-context finds the PR template from a subdirectory" "$OUT" "Pull request template (.github/pull_request_template.md)"
 run "$bc" branch-context --base feature
 assert_eq "branch-context with no commits exits 1" "$RC" "1"
 run "$bc" branch-context --base nope

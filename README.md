@@ -85,6 +85,8 @@ git-pilot <command> [options]
 | `push` | `git push` |
 | `--version`, `--help` | |
 
+Commands work from any directory of the repository. Printed paths are relative to the repository root; paths you pass are relative to the current directory, as with Git.
+
 stdout carries data and stderr carries diagnostics, so the output is easy to pipe:
 
 ```bash

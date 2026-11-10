@@ -11,7 +11,9 @@ script does the Git plumbing and safety checks.
 The script is `scripts/git-pilot.sh`, relative to this SKILL.md. Run it with
 `bash <this-skill-dir>/scripts/git-pilot.sh <command>` from inside the user's
 repository. If `git-pilot` is on `PATH` (Homebrew install), it is the same
-tool. stdout is data for you; stderr is diagnostics.
+tool. stdout is data for you; stderr is diagnostics. Paths in the output are
+relative to the repository root; paths you pass are relative to your current
+directory, as with Git, so prefer running from the root.
 
 Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
 `3` rebase stopped on conflicts, `4` push rejected, `5` staged files flagged as

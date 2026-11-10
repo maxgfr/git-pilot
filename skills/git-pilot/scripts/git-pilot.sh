@@ -111,6 +111,12 @@ git_dir() {
     git rev-parse --git-dir 2>/dev/null || echo ".git"
 }
 
+# Top of the working tree. Paths are printed relative to it and repository
+# files are looked up from it, so commands behave the same from any directory.
+repo_root() {
+    git rev-parse --show-toplevel
+}
+
 rebase_in_progress() {
     local dir
     dir=$(git_dir)
@@ -125,7 +131,7 @@ unmerged_files() {
 conflicted_files() {
     {
         unmerged_files
-        git grep -Il -E '^<<<<<<<( |$)' 2>/dev/null || true
+        git grep -Il --full-name -E '^<<<<<<<( |$)' -- ':/' 2>/dev/null || true
     } | awk 'NF && !seen[$0]++'
 }
 
@@ -401,20 +407,21 @@ staged_findings() {
 
 # Print a "Conventions:" section describing the repository's commit style.
 detect_conventions() {
-    local tooling=() f
+    local tooling=() f root
+    root=$(repo_root)
     for f in commitlint.config.js commitlint.config.cjs commitlint.config.mjs commitlint.config.ts \
              .commitlintrc .commitlintrc.json .commitlintrc.yml .commitlintrc.yaml .commitlintrc.js; do
-        [ -f "$f" ] && tooling+=("commitlint ($f)")
+        [ -f "$root/$f" ] && tooling+=("commitlint ($f)")
     done
     for f in .releaserc .releaserc.json .releaserc.yml .releaserc.yaml .releaserc.js release.config.js release.config.cjs; do
-        [ -f "$f" ] && tooling+=("semantic-release ($f)")
+        [ -f "$root/$f" ] && tooling+=("semantic-release ($f)")
     done
-    [ -f .czrc ] && tooling+=("commitizen (.czrc)")
-    [ -f .husky/commit-msg ] && tooling+=("commit-msg hook (.husky/commit-msg)")
-    if [ -f package.json ]; then
-        grep -q '"commitlint"' package.json && tooling+=("commitlint (package.json)")
-        grep -q '"release"[[:space:]]*:' package.json && tooling+=("semantic-release (package.json)")
-        grep -q '"commitizen"' package.json && tooling+=("commitizen (package.json)")
+    [ -f "$root/.czrc" ] && tooling+=("commitizen (.czrc)")
+    [ -f "$root/.husky/commit-msg" ] && tooling+=("commit-msg hook (.husky/commit-msg)")
+    if [ -f "$root/package.json" ]; then
+        grep -q '"commitlint"' "$root/package.json" && tooling+=("commitlint (package.json)")
+        grep -q '"release"[[:space:]]*:' "$root/package.json" && tooling+=("semantic-release (package.json)")
+        grep -q '"commitizen"' "$root/package.json" && tooling+=("commitizen (package.json)")
     fi
 
     local subjects total conventional emoji types scopes
@@ -536,10 +543,11 @@ cmd_status() {
     diff_summary
 
     printf '\n%s\n' "Untracked (bytes path):"
-    local file
+    local file root
+    root=$(repo_root)
     while IFS= read -r -d '' file; do
-        printf '  %s %s\n' "$(wc -c < "$file" | xargs)" "$file"
-    done < <(git ls-files --others --exclude-standard -z)
+        printf '  %s %s\n' "$(wc -c < "$root/$file" | xargs)" "$file"
+    done < <(git ls-files --others --exclude-standard --full-name -z -- ':/')
 
     local conflicts
     conflicts=$(conflicted_files)
@@ -594,17 +602,18 @@ cmd_branch_context() {
         printf '\n%s\n%s\n' "Commit bodies:" "$bodies"
     fi
 
-    local template="" f
+    local template="" f root
+    root=$(repo_root)
     for f in .github/pull_request_template.md .github/PULL_REQUEST_TEMPLATE.md PULL_REQUEST_TEMPLATE.md \
              docs/pull_request_template.md .gitlab/merge_request_templates/Default.md; do
-        if [ -f "$f" ]; then
+        if [ -f "$root/$f" ]; then
             template="$f"
             break
         fi
     done
     if [ -n "$template" ]; then
         printf '\n%s\n' "Pull request template ($template):"
-        cat "$template"
+        cat "$root/$template"
     fi
 
     printf '\n'
