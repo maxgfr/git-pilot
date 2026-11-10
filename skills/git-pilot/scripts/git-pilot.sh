@@ -470,7 +470,11 @@ detect_conventions() {
 
     if [ "$total" -gt 0 ]; then
         conventional=$(printf '%s\n' "$subjects" | grep -cE '^[a-z]+(\([^)]*\))?!?: ' || true)
-        emoji=$(printf '%s\n' "$subjects" | LC_ALL=C grep -cE '^([^ -~]|:[a-z0-9_+-]+:)' || true)
+        # Emoji by their UTF-8 lead bytes (U+1Fxxx, and the arrow, technical, symbol
+        # and dingbat blocks), or a :shortcode:. Any non-ASCII byte would also
+        # match accented and CJK letters.
+        local emoji_lead=$'^(\xf0\x9f|\xe2[\x86\x87\x8c-\x8f\x96-\x9e\xac-\xaf]|:[a-z0-9_+-]+:)'
+        emoji=$(printf '%s\n' "$subjects" | LC_ALL=C grep -cE "$emoji_lead" || true)
         printf '  Conventional Commits: %s/%s recent subjects\n' "$conventional" "$total"
         printf '  Leading emoji: %s/%s recent subjects\n' "$emoji" "$total"
         types=$(printf '%s\n' "$subjects" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?: .*/\1/p' | sort | uniq -c | sort -rn | head -6 | awk '{ printf "%s%s (%s)", sep, $2, $1; sep = ", " }')

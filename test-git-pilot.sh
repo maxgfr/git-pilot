@@ -464,6 +464,16 @@ assert_contains "conventions count conventional subjects" "$OUT" "Conventional C
 assert_contains "conventions list scopes" "$OUT" "Scopes used: cli (2)"
 assert_contains "conventions count emoji subjects" "$OUT" "Leading emoji: 0/4"
 
+# Accented and CJK first letters are text, not emoji.
+emo=$(new_repo emoji)
+for subject in "Éviter la casse" "修复 bug" "Über fix" "✨ add sparkle" "🐛 fix bug" ":bug: fix other bug" "♻️ recycle code"; do
+    git -C "$emo" commit -q --allow-empty -m "$subject"
+done
+printf '%s\n' "x" > "$emo/x.txt"
+git -C "$emo" add x.txt
+run "$emo" commit-context
+assert_contains "conventions count only real leading emoji" "$OUT" "Leading emoji: 4/8 recent subjects"
+
 # --- branch-context ----------------------------------------------------------
 
 bc=$(new_repo branch)
