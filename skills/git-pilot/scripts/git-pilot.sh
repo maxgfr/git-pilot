@@ -659,6 +659,7 @@ cmd_branch_context() {
 }
 
 cmd_push() {
+    [ $# -eq 0 ] || die "push takes no arguments: it runs a plain 'git push' of the current branch."
     log_info "Pushing..."
     if git push >&2; then
         log_success "Pushed!"
@@ -726,10 +727,12 @@ cmd_commit() {
 }
 
 cmd_conflicts() {
+    [ $# -eq 0 ] || die "conflicts takes no arguments."
     conflicted_files
 }
 
 cmd_merge_context() {
+    [ $# -eq 0 ] || die "merge-context takes no arguments."
     local files
     files=$(conflicted_files)
     if [ -n "$files" ]; then
@@ -793,6 +796,7 @@ rebase_failure() {
 
 cmd_rebase() {
     local sub="${1:-}"
+    [ $# -le 1 ] || die "Usage: rebase <start|continue|abort>"
     case "$sub" in
         start)
             rebase_in_progress && die "A rebase is already in progress. Use 'rebase continue' or 'rebase abort'."

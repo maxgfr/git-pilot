@@ -383,6 +383,19 @@ assert_eq "push succeeds after rebase" "$RC" "0"
 run "$local_clone" rebase continue
 assert_eq "rebase continue without a rebase exits 1" "$RC" "1"
 
+# Arguments that would be ignored are refused instead.
+printf '%s\n' "a" "second local edit" "c" > "$local_clone/shared.txt"
+git -C "$local_clone" commit -q -am "feat: second local edit"
+run "$local_clone" push --force
+assert_eq "push refuses extra arguments" "$RC" "1"
+assert_eq "a refused push sends nothing" "$(git -C "$local_clone" rev-list --count '@{upstream}..HEAD')" "1"
+run "$local_clone" rebase start --autostash
+assert_eq "rebase refuses extra arguments" "$RC" "1"
+run "$local_clone" conflicts shared.txt
+assert_eq "conflicts refuses arguments" "$RC" "1"
+run "$local_clone" merge-context shared.txt
+assert_eq "merge-context refuses arguments" "$RC" "1"
+
 # --- status ------------------------------------------------------------------
 
 st=$(new_repo status)
