@@ -144,11 +144,48 @@ unmerged_files() {
     git_plain diff --name-only --diff-filter=U 2>/dev/null || true
 }
 
-# Unmerged files plus tracked files that still contain conflict markers.
+# Sorted paths, from the index and the working tree, that have a conflict
+# marker line which commit (or tree) $1 does not have.
+marker_files_against() {
+    {
+        git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$1" -- 2>/dev/null || true
+        git_plain diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$1" -- 2>/dev/null || true
+    } | awk '/^diff --git / { in_hunk = 0; next }
+             /^@@ / { in_hunk = 1; next }
+             !in_hunk && /^\+\+\+ / { file = substr($0, 7); sub(/\t$/, "", file); next }
+             in_hunk && /^\+<<<<<<<( |$)/ && !seen[file]++ { print file }' | LC_ALL=C sort
+}
+
+# Files where an unfinished resolution left conflict markers: marker lines that
+# are new compared with HEAD and with the other side of the operation in
+# progress. Marker lines that a side already had (merge fixtures, documentation
+# about conflicts) are content, not leftovers, and never block a commit.
+leftover_marker_files() {
+    local refs=() ref files i
+    if git rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then
+        refs+=(HEAD)
+    else
+        refs+=("$(git hash-object -t tree /dev/null)")
+    fi
+    for ref in MERGE_HEAD CHERRY_PICK_HEAD REBASE_HEAD 'REVERT_HEAD^'; do
+        if git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1; then
+            refs+=("$ref")
+        fi
+    done
+
+    files=$(marker_files_against "${refs[0]}")
+    for ((i = 1; i < ${#refs[@]}; i++)); do
+        [ -n "$files" ] || break
+        files=$(LC_ALL=C comm -12 <(printf '%s\n' "$files") <(marker_files_against "${refs[$i]}"))
+    done
+    [ -z "$files" ] || printf '%s\n' "$files"
+}
+
+# Unmerged files plus files where a resolution left conflict markers.
 conflicted_files() {
     {
         unmerged_files
-        git_plain grep -Il --full-name -E '^<<<<<<<( |$)' -- ':/' 2>/dev/null || true
+        leftover_marker_files
     } | awk 'NF && !seen[$0]++'
 }
 
