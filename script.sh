@@ -2,54 +2,35 @@
 
 # ==============================================================================
 #  git-pilot
-#  AI-powered git automation: smart commits, conflict resolution, and auto-rebase
-#  Supports Claude Code, Codex (CLI), Anthropic, OpenAI, Gemini, Mistral (API)
+#  Deterministic Git helpers for the git-pilot agent skill.
+#  The agent running the skill writes commit messages and resolves conflicts;
+#  this script never calls a model. stdout is data, stderr is diagnostics.
 # ==============================================================================
 
 set -eo pipefail
 
-# --- Configuration & Defaults ---
 VERSION="1.12.11"
-CONFIG_DIR="${GIT_PILOT_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/git-pilot}"
-CONFIG_FILE="$CONFIG_DIR/config"
-MAX_TOKENS=1024
 
-# --- Runtime state (overridable by CLI flags) ---
-PROVIDER=""
-MODEL=""
-MODEL_EXPLICIT=false
-API_KEY=""
-DRY_RUN=false
-AUTO_STAGE=false
-AUTO_PUSH=false
-CONVENTIONAL=false
-COMMIT_TYPE=""    # forced conventional commit type (feat, fix, docs, etc.)
-EMOJI=false
-LANGUAGE=""
-BULLETS=false
-SKIP_CONFIRM=false
-ACTION="commit"  # commit | setup | config | resolve | rebase
+# Exit codes
+EXIT_ERROR=1
+EXIT_CONFLICTS=2
+EXIT_REBASE_STOPPED=3
+EXIT_PUSH_REJECTED=4
 
-# --- Colors ---
+# --- Colors (stderr only) ---
 if [ -t 2 ]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     BLUE='\033[0;34m'
     YELLOW='\033[1;33m'
-    CYAN='\033[0;36m'
-    BOLD='\033[1m'
     NC='\033[0m'
 else
     RED=''
     GREEN=''
     BLUE=''
     YELLOW=''
-    CYAN=''
-    BOLD=''
     NC=''
 fi
-
-# --- Helper Functions ---
 
 log_info() {
     printf "${BLUE}[INFO]${NC} %s\n" "$1" >&2
@@ -67,744 +48,95 @@ log_error() {
     printf "${RED}[ERROR]${NC} %s\n" "$1" >&2
 }
 
-# Process tracking via PID files (needed because subshells can't share variables with parent)
-_PIDDIR=$(mktemp -d)
-_SPINNER_PIDFILE="$_PIDDIR/spinner"
-_AI_PIDFILE="$_PIDDIR/ai"
-
-start_spinner() {
-    local msg="$1"
-    if [ ! -t 2 ]; then return; fi
-    (
-        trap 'exit 0' TERM INT
-        local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-        local i=0
-        while true; do
-            printf "\r${CYAN}%s${NC} %s" "${frames[$i]}" "$msg" >&2
-            i=$(( (i + 1) % ${#frames[@]} ))
-            sleep 0.1
-        done
-    ) &
-    echo $! > "$_SPINNER_PIDFILE"
-}
-
-stop_spinner() {
-    if [ -f "$_SPINNER_PIDFILE" ]; then
-        local pid
-        pid=$(cat "$_SPINNER_PIDFILE")
-        rm -f "$_SPINNER_PIDFILE"
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null || true
-        fi
-    fi
-    printf "\r\033[K" >&2
-}
-
-_save_ai_pid() {
-    echo "$1" > "$_AI_PIDFILE"
-}
-
-kill_ai() {
-    if [ -f "$_AI_PIDFILE" ]; then
-        local pid
-        pid=$(cat "$_AI_PIDFILE")
-        rm -f "$_AI_PIDFILE"
-        if [ -n "$pid" ]; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null || true
-        fi
-    fi
-}
-
-cleanup() {
-    kill_ai
-    stop_spinner
-    rm -rf "$_PIDDIR" 2>/dev/null
-}
-
-trap 'cleanup' EXIT
-trap 'cleanup; exit 130' INT
-
-print_banner() {
-    echo -e "${CYAN}"
-    echo "   ██████╗ ██╗████████╗      ██████╗ ██╗██╗      ██████╗ ████████╗"
-    echo "  ██╔════╝ ██║╚══██╔══╝      ██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝"
-    echo "  ██║  ███╗██║   ██║   █████╗██████╔╝██║██║     ██║   ██║   ██║   "
-    echo "  ██║   ██║██║   ██║   ╚════╝██╔═══╝ ██║██║     ██║   ██║   ██║   "
-    echo "  ╚██████╔╝██║   ██║         ██║     ██║███████╗╚██████╔╝   ██║   "
-    echo "   ╚═════╝ ╚═╝   ╚═╝         ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   "
-    echo -e "${NC}"
-    echo -e "              AI-powered git automation v${VERSION}"
-    echo ""
+die() {
+    log_error "$1"
+    exit "${2:-$EXIT_ERROR}"
 }
 
 print_usage() {
-    echo "Usage: git-pilot [command] [options]"
-    echo ""
-    echo "Commands:"
-    echo "  commit              Generate AI commit message and commit (default)"
-    echo "  <type>              Force conventional commit type (feat, fix, docs, refactor, chore, ...)"
-    echo "  resolve             Resolve merge conflicts with AI"
-    echo "  rebase              Pull --rebase with AI conflict resolution"
-    echo "  setup               Run interactive configuration wizard"
-    echo "  config              Show current configuration"
-    echo ""
-    echo "Options:"
-    echo "  -p, --provider <name>    Provider: claude-code, codex, anthropic, openai, gemini, mistral"
-    echo "  -m, --model <name>       Model name (e.g. haiku, gpt-5-mini, claude-haiku-4-5)"
-    echo "      --api-key <key>      API key (for API providers: anthropic, openai, gemini, mistral)"
-    echo "  -d, --dry-run            Preview commit message without committing"
-    echo "  -a, --auto-stage         Stage all changes before commit"
-    echo "  -P, --auto-push          Push after commit"
-    echo "  -c, --conventional       Use Conventional Commits format"
-    echo "  -e, --emoji              Add emoji to commit message"
-    echo "  -l, --lang <code>        Language for commit message (e.g. en, fr, es)"
-    echo "  -B, --bullets            Include bullet points in description"
-    echo "      --no-bullets         Title only, no bullet points (default)"
-    echo "  -y, --yes                Skip confirmation prompts"
-    echo "  -v, --version            Show version"
-    echo "  -h, --help               Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  git-pilot                          # Commit with AI message"
-    echo "  git-pilot fix                      # Force conventional commit with 'fix' type"
-    echo "  git-pilot feat -B                  # Force 'feat' type, with bullet points"
-    echo "  git-pilot -a -c                    # Auto-stage + conventional commits"
-    echo "  git-pilot -d                       # Dry run (preview only)"
-    echo "  git-pilot resolve                  # Resolve merge conflicts"
-    echo "  git-pilot rebase                   # Pull --rebase with AI"
-    echo "  git-pilot setup                    # Configure provider & preferences"
-    echo "  git-pilot config                   # Show current config"
-    echo "  git-pilot -a -P                    # Auto-stage + push after commit"
-    echo "  git-pilot -p anthropic             # Use Anthropic API (claude-haiku-4-5)"
-    echo "  git-pilot -p openai -m gpt-5-mini  # Use specific API provider/model"
-    echo "  git-pilot -p codex                 # Use OpenAI Codex CLI"
-}
+    cat <<'EOF'
+git-pilot — deterministic Git helpers for the git-pilot agent skill
 
-ask_yes_no() {
-    local prompt="$1"
-    if [ "$SKIP_CONFIRM" = true ]; then
-        return 0
-    fi
-    printf "\n%b%s [y/N]: %b" "$BOLD" "$prompt" "$NC" >&2
-    read -r answer
-    [[ "$answer" == "y" || "$answer" == "Y" ]]
-}
+Usage: git-pilot.sh <command> [options]
 
-prompt_input() {
-    local prompt_text="$1"
-    local default_val="$2"
-    local user_val
+Commit:
+  commit-context [-a]                 Print staged files, recent subjects and the staged diff
+                                      (-a stages all changes first)
+  commit (-F <file|-> | -m <msg>) [--dry-run] [--push]
+                                      Commit the staged changes with the given message
 
-    if [ -n "$default_val" ]; then
-        printf "%b%s [%s]: %b" "$BOLD" "$prompt_text" "$default_val" "$NC" >&2
-    else
-        printf "%b%s: %b" "$BOLD" "$prompt_text" "$NC" >&2
-    fi
+Conflicts:
+  conflicts                           List files with unresolved conflicts
+  merge-context                       Print merge/rebase context for conflict resolution
+  take <ours|theirs|both> <file>...   Resolve every conflict in the files with one strategy and stage them
+  mark-resolved <file>...             Stage files after checking no conflict markers remain
 
-    read -r user_val
-    if [ -z "$user_val" ]; then
-        echo "$default_val"
-    else
-        echo "$user_val"
-    fi
-}
+Sync:
+  rebase start                        git pull --rebase
+  rebase continue                     Continue the rebase after conflicts are resolved
+  rebase abort                        Abort the rebase in progress
+  push                                git push
 
-prompt_secret() {
-    local prompt_text="$1"
-    local user_val
-    printf "%b%s: %b" "$BOLD" "$prompt_text" "$NC" >&2
-    read -rs user_val
-    echo "" >&2
-    echo "$user_val"
-}
+Other:
+  -v, --version                       Show version
+  -h, --help                          Show this help
 
-prompt_select() {
-    local prompt_text="$1"
-    shift
-    local options=("$@")
-
-    echo "" >&2
-    printf "%b%s%b\n" "$BOLD" "$prompt_text" "$NC" >&2
-    for i in "${!options[@]}"; do
-        printf "  %b%d)%b %s\n" "$CYAN" "$((i + 1))" "$NC" "${options[$i]}" >&2
-    done
-    printf "%bChoice [1]: %b" "$BOLD" "$NC" >&2
-    read -r choice
-
-    if [ -z "$choice" ]; then
-        choice=1
-    fi
-
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#options[@]}" ]; then
-        echo "${options[$((choice - 1))]}"
-    else
-        echo "${options[0]}"
-    fi
-}
-
-detect_pkg_manager() {
-    if command -v brew >/dev/null 2>&1; then echo "brew"; return; fi
-    if command -v apt-get >/dev/null 2>&1; then echo "apt"; return; fi
-    if command -v dnf >/dev/null 2>&1; then echo "dnf"; return; fi
-    if command -v yum >/dev/null 2>&1; then echo "yum"; return; fi
-}
-
-install_package() {
-    local manager="$1"
-    local pkg="$2"
-    log_info "Installing $pkg via $manager..."
-
-    case "$manager" in
-        brew) brew install "$pkg" ;;
-        apt) sudo apt-get update && sudo apt-get install -y "$pkg" ;;
-        dnf) sudo dnf install -y "$pkg" ;;
-        yum) sudo yum install -y "$pkg" ;;
-        *) return 1 ;;
-    esac
-}
-
-require_command() {
-    local cmd="$1"
-    local pkg="${2:-$1}"
-
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        log_warn "Missing dependency: $cmd"
-        local manager
-        manager=$(detect_pkg_manager)
-        if [ -n "$manager" ]; then
-            if ask_yes_no "Install '$pkg' using $manager?"; then
-                install_package "$manager" "$pkg" || true
-            fi
-        else
-            log_error "No package manager found. Install '$pkg' manually."
-        fi
-
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            log_error "Command '$cmd' still not found. Exiting."
-            exit 1
-        fi
-    fi
-}
-
-# ==============================================================================
-#  Config Management
-# ==============================================================================
-
-load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        # shellcheck source=/dev/null
-        while IFS='=' read -r key value || [ -n "$key" ]; do
-            # Skip comments and empty lines
-            [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
-            # Trim whitespace
-            key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            case "$key" in
-                provider)      [ -z "$PROVIDER" ] && PROVIDER="$value" ;;
-                api_key)       [ -z "$API_KEY" ] && API_KEY="$value" ;;
-                model)         [ -z "$MODEL" ] && MODEL="$value" ;;
-                max_tokens)    MAX_TOKENS="$value" ;;
-                auto_stage)    [ "$AUTO_STAGE" = false ] && AUTO_STAGE="$value" ;;
-                auto_push)     [ "$AUTO_PUSH" = false ] && AUTO_PUSH="$value" ;;
-                language)      [ -z "$LANGUAGE" ] && LANGUAGE="$value" ;;
-                conventional)  [ "$CONVENTIONAL" = false ] && CONVENTIONAL="$value" ;;
-                emoji)         [ "$EMOJI" = false ] && EMOJI="$value" ;;
-                bullets)       [ "$BULLETS" = false ] && BULLETS="$value" ;;
-                skip_confirm)  [ "$SKIP_CONFIRM" = false ] && SKIP_CONFIRM="$value" ;;
-            esac
-        done < "$CONFIG_FILE"
-    fi
-
-    # Env var fallbacks for API key (only for API-based providers)
-    if [ -z "$API_KEY" ]; then
-        case "$PROVIDER" in
-            anthropic)  API_KEY="${ANTHROPIC_API_KEY:-}" ;;
-            openai)     API_KEY="${OPENAI_API_KEY:-}" ;;
-            gemini)     API_KEY="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}" ;;
-            mistral)    API_KEY="${MISTRAL_API_KEY:-}" ;;
-        esac
-    fi
-}
-
-save_config() {
-    mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_FILE" << EOF
-# git-pilot configuration
-provider=$PROVIDER
-api_key=$API_KEY
-model=$MODEL
-max_tokens=$MAX_TOKENS
-auto_stage=$AUTO_STAGE
-auto_push=$AUTO_PUSH
-language=$LANGUAGE
-conventional=$CONVENTIONAL
-emoji=$EMOJI
-bullets=$BULLETS
-skip_confirm=$SKIP_CONFIRM
+Exit codes:
+  0 success, 1 error, 2 conflict markers or unmerged files present,
+  3 rebase stopped on conflicts, 4 push rejected (run 'rebase start' first)
 EOF
-    chmod 600 "$CONFIG_FILE"
-    log_success "Configuration saved to $CONFIG_FILE"
-}
-
-get_default_model() {
-    local p="$1"
-    case "$p" in
-        claude-code) echo "haiku" ;;
-        codex)       echo "" ;;
-        anthropic)   echo "claude-haiku-4-5" ;;
-        openai)      echo "gpt-5-mini" ;;
-        gemini)      echo "gemini-2.5-flash-lite" ;;
-        mistral)     echo "mistral-small-latest" ;;
-        *)           echo "" ;;
-    esac
-}
-
-# Check if provider is CLI-based (no API key needed)
-is_cli_provider() {
-    local p="$1"
-    case "$p" in
-        claude-code|codex) return 0 ;;
-        *) return 1 ;;
-    esac
 }
 
 # ==============================================================================
-#  Setup Wizard
-# ==============================================================================
-
-run_setup() {
-    print_banner
-    log_info "Configuration Wizard"
-    echo ""
-
-    # Provider
-    PROVIDER=$(prompt_select "Choose your AI provider:" "claude-code" "codex" "anthropic" "openai" "gemini" "mistral")
-    log_info "Provider: $PROVIDER"
-
-    if is_cli_provider "$PROVIDER"; then
-        # CLI-based provider — check CLI is installed
-        local cli_cmd
-        case "$PROVIDER" in
-            claude-code) cli_cmd="claude" ;;
-            codex)       cli_cmd="codex" ;;
-        esac
-        if command -v "$cli_cmd" >/dev/null 2>&1; then
-            log_success "$cli_cmd CLI found!"
-        else
-            log_warn "$cli_cmd CLI not found. Install it before using git-pilot."
-        fi
-        API_KEY=""
-        MODEL=""
-    else
-        # API-based provider — need key + model
-        API_KEY=$(prompt_secret "Enter your API key")
-        if [ -z "$API_KEY" ]; then
-            log_error "API key is required for $PROVIDER."
-            exit 1
-        fi
-
-        local default_model
-        default_model=$(get_default_model "$PROVIDER")
-        MODEL=$(prompt_input "Model" "$default_model")
-    fi
-
-    # Preferences
-    echo ""
-    log_info "Preferences"
-
-    if ask_yes_no "Auto-stage all changes before commit?"; then
-        AUTO_STAGE=true
-    else
-        AUTO_STAGE=false
-    fi
-
-    if ask_yes_no "Auto-push after commit?"; then
-        AUTO_PUSH=true
-    else
-        AUTO_PUSH=false
-    fi
-
-    if ask_yes_no "Use Conventional Commits format?"; then
-        CONVENTIONAL=true
-    else
-        CONVENTIONAL=false
-    fi
-
-    if ask_yes_no "Add emoji to commit messages?"; then
-        EMOJI=true
-    else
-        EMOJI=false
-    fi
-
-    if ask_yes_no "Include bullet points in commit description?"; then
-        BULLETS=true
-    else
-        BULLETS=false
-    fi
-
-    if ask_yes_no "Skip confirmation prompts? (auto-accept all y/N prompts)"; then
-        SKIP_CONFIRM=true
-    else
-        SKIP_CONFIRM=false
-    fi
-
-    LANGUAGE=$(prompt_input "Commit message language" "en")
-
-    # Test connection
-    echo ""
-    log_info "Testing connection..."
-    local test_response
-    test_response=$(call_ai_api "Say 'OK' if you can read this." 2>&1) || true
-    if [ -n "$test_response" ] && [ "$test_response" != "null" ]; then
-        log_success "Connection successful!"
-    else
-        log_warn "Could not verify connection. Configuration saved anyway."
-    fi
-
-    save_config
-    echo ""
-    log_success "Setup complete! Run 'git-pilot' in any git repo to start."
-}
-
-show_config() {
-    load_config
-
-    # Apply defaults for display
-    local p="${PROVIDER:-claude-code}"
-    local m="${MODEL:-$(get_default_model "$p")}"
-    [[ "$p" == "codex" ]] && m=""
-    local l="${LANGUAGE:-en}"
-
-    echo ""
-    echo -e "${BOLD}git-pilot configuration${NC}"
-    echo -e "${CYAN}─────────────────────────────────────${NC}"
-    printf "  %-16s %s\n" "Provider:" "$p"
-    printf "  %-16s %s\n" "Model:" "${m:-<provider default>}"
-    if is_cli_provider "$p"; then
-        printf "  %-16s %s\n" "API key:" "(not needed — CLI provider)"
-    elif [ -n "$API_KEY" ]; then
-        printf "  %-16s %s\n" "API key:" "${API_KEY:0:8}...${API_KEY: -4}"
-    else
-        printf "  %-16s %s\n" "API key:" "(not set)"
-    fi
-    printf "  %-16s %s\n" "Max tokens:" "$MAX_TOKENS"
-    printf "  %-16s %s\n" "Language:" "$l"
-    printf "  %-16s %s\n" "Auto-stage:" "$AUTO_STAGE"
-    printf "  %-16s %s\n" "Auto-push:" "$AUTO_PUSH"
-    printf "  %-16s %s\n" "Conventional:" "$CONVENTIONAL"
-    printf "  %-16s %s\n" "Emoji:" "$EMOJI"
-    printf "  %-16s %s\n" "Bullets:" "$BULLETS"
-    printf "  %-16s %s\n" "Skip confirm:" "$SKIP_CONFIRM"
-    echo -e "${CYAN}─────────────────────────────────────${NC}"
-    printf "  %-16s %s\n" "Config file:" "$CONFIG_FILE"
-    if [ -f "$CONFIG_FILE" ]; then
-        printf "  %-16s %s\n" "Status:" "exists"
-    else
-        printf "  %-16s %s\n" "Status:" "not created yet (run 'git-pilot setup')"
-    fi
-    echo ""
-}
-
-# ==============================================================================
-#  AI Providers (CLI + API)
-# ==============================================================================
-
-call_ai_api() {
-    local prompt="$1"
-    local response
-
-    local spinner_msg="Thinking"
-    [ -n "$MODEL" ] && spinner_msg="Thinking ($PROVIDER/$MODEL)"
-    start_spinner "$spinner_msg..."
-
-    case "$PROVIDER" in
-        claude-code) response=$(call_claude_code "$prompt") || { stop_spinner; exit 1; } ;;
-        codex)       response=$(call_codex_cli "$prompt")   || { stop_spinner; exit 1; } ;;
-        anthropic)   response=$(call_anthropic "$prompt")   || { stop_spinner; exit 1; } ;;
-        openai)      response=$(call_openai "$prompt" "$MODEL") || { stop_spinner; exit 1; } ;;
-        gemini)      response=$(call_gemini "$prompt")      || { stop_spinner; exit 1; } ;;
-        mistral)     response=$(call_mistral "$prompt")     || { stop_spinner; exit 1; } ;;
-        *)
-            stop_spinner
-            log_error "Unknown provider: $PROVIDER"
-            exit 1
-            ;;
-    esac
-
-    stop_spinner
-
-    if [ -z "$response" ]; then
-        log_error "AI provider '$PROVIDER' returned empty response."
-        exit 1
-    fi
-
-    printf '%s\n' "$response"
-}
-
-# --- CLI-based providers ---
-
-# Run a command in the background so Ctrl+C can interrupt via the INT trap.
-# Usage: run_interruptible result_var stdin_data command [args...]
-run_interruptible() {
-    local _var="$1"
-    local _stdin="$2"
-    shift 2
-    local tmpfile
-    tmpfile=$(mktemp "$_PIDDIR/output.XXXXXX")
-    local errfile
-    errfile=$(mktemp "$_PIDDIR/error.XXXXXX")
-    local stdinfile=""
-
-    if [ -n "$_stdin" ]; then
-        stdinfile=$(mktemp "$_PIDDIR/input.XXXXXX")
-        chmod 600 "$stdinfile"
-        printf '%s' "$_stdin" > "$stdinfile"
-        "$@" > "$tmpfile" 2>"$errfile" < "$stdinfile" &
-    else
-        "$@" > "$tmpfile" 2>"$errfile" < /dev/null &
-    fi
-    local pid=$!
-    _save_ai_pid "$pid"
-    wait "$pid" 2>/dev/null
-    local rc=$?
-    rm -f "$_AI_PIDFILE"
-
-    if [ $rc -ne 0 ]; then
-        # Show stderr for debugging if command failed
-        local err_content
-        err_content=$(cat "$errfile" 2>/dev/null)
-        [ -n "$err_content" ] && log_error "$err_content"
-        rm -f "$tmpfile" "$errfile"
-        [ -n "$stdinfile" ] && rm -f "$stdinfile"
-        return $rc
-    fi
-
-    eval "$_var=\$(cat \"\$tmpfile\")"
-    rm -f "$tmpfile" "$errfile"
-    if [ -n "$stdinfile" ]; then
-        rm -f "$stdinfile"
-    fi
-}
-
-call_claude_code() {
-    local prompt="$1"
-    local result
-    local model_flag=""
-
-    if [ -n "$MODEL" ]; then
-        model_flag="--model $MODEL"
-    fi
-
-    # Unset all Claude Code env vars to allow running inside Claude Code sessions
-    # shellcheck disable=SC2086
-    run_interruptible result "" env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SIMPLE claude -p "$prompt" --no-session-persistence $model_flag || {
-        log_error "Claude Code CLI failed. Is 'claude' installed and authenticated?"
-        exit 1
-    }
-
-    if [ -z "$result" ]; then
-        log_error "Claude Code returned empty response."
-        exit 1
-    fi
-
-    printf '%s\n' "$result"
-}
-
-call_codex_cli() {
-    local prompt="$1"
-    local result
-    local codex_args=(exec --ephemeral -s read-only)
-
-    if [ -n "$MODEL" ]; then
-        codex_args+=(-m "$MODEL")
-    fi
-
-    run_interruptible result "$prompt" codex "${codex_args[@]}" - || {
-        log_error "Codex CLI failed. Is 'codex' installed and authenticated?"
-        exit 1
-    }
-
-    if [ -z "$result" ]; then
-        log_error "Codex returned empty response."
-        exit 1
-    fi
-
-    printf '%s\n' "$result"
-}
-
-# --- API-based providers ---
-
-call_anthropic() {
-    local prompt="$1"
-    local body
-    body=$(jq -n \
-        --arg model "$MODEL" \
-        --argjson max_tokens "$MAX_TOKENS" \
-        --arg prompt "$prompt" \
-        '{
-            model: $model,
-            max_tokens: $max_tokens,
-            messages: [{ role: "user", content: $prompt }]
-        }')
-
-    local result=""
-    run_interruptible result "" curl -s -w "\n%{http_code}" \
-        -H "Content-Type: application/json" \
-        -H "x-api-key: $API_KEY" \
-        -H "anthropic-version: 2023-06-01" \
-        -d "$body" \
-        "https://api.anthropic.com/v1/messages"
-
-    local http_code
-    http_code=$(echo "$result" | tail -n1)
-    local response_body
-    response_body=$(echo "$result" | sed '$d')
-
-    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
-        local error_msg
-        error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Anthropic API error (${http_code:-no response}): $error_msg"
-        exit 1
-    fi
-
-    echo "$response_body" | jq -r '.content[0].text'
-}
-
-call_openai() {
-    local prompt="$1"
-    local model="$2"
-    local body
-    body=$(jq -n \
-        --arg model "$model" \
-        --argjson max_tokens "$MAX_TOKENS" \
-        --arg prompt "$prompt" \
-        '{
-            model: $model,
-            max_tokens: $max_tokens,
-            messages: [{ role: "user", content: $prompt }]
-        }')
-
-    local result=""
-    run_interruptible result "" curl -s -w "\n%{http_code}" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $API_KEY" \
-        -d "$body" \
-        "https://api.openai.com/v1/chat/completions"
-
-    local http_code
-    http_code=$(echo "$result" | tail -n1)
-    local response_body
-    response_body=$(echo "$result" | sed '$d')
-
-    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
-        local error_msg
-        error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "OpenAI API error (${http_code:-no response}): $error_msg"
-        exit 1
-    fi
-
-    echo "$response_body" | jq -r '.choices[0].message.content'
-}
-
-call_gemini() {
-    local prompt="$1"
-    local body
-    body=$(jq -n \
-        --arg prompt "$prompt" \
-        '{
-            contents: [{ parts: [{ text: $prompt }] }]
-        }')
-
-    local result=""
-    run_interruptible result "" curl -s -w "\n%{http_code}" \
-        -H "Content-Type: application/json" \
-        -d "$body" \
-        "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}"
-
-    local http_code
-    http_code=$(echo "$result" | tail -n1)
-    local response_body
-    response_body=$(echo "$result" | sed '$d')
-
-    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
-        local error_msg
-        error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Gemini API error (${http_code:-no response}): $error_msg"
-        exit 1
-    fi
-
-    echo "$response_body" | jq -r '.candidates[0].content.parts[0].text'
-}
-
-call_mistral() {
-    local prompt="$1"
-    local body
-    body=$(jq -n \
-        --arg model "$MODEL" \
-        --argjson max_tokens "$MAX_TOKENS" \
-        --arg prompt "$prompt" \
-        '{
-            model: $model,
-            max_tokens: $max_tokens,
-            messages: [{ role: "user", content: $prompt }]
-        }')
-
-    local result=""
-    run_interruptible result "" curl -s -w "\n%{http_code}" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $API_KEY" \
-        -d "$body" \
-        "https://api.mistral.ai/v1/chat/completions"
-
-    local http_code
-    http_code=$(echo "$result" | tail -n1)
-    local response_body
-    response_body=$(echo "$result" | sed '$d')
-
-    if ! [[ "$http_code" =~ ^[0-9]+$ ]] || [ "$http_code" -ne 200 ]; then
-        local error_msg
-        error_msg=$(echo "$response_body" | jq -r '.error.message // .error // "Unknown error"' 2>/dev/null)
-        log_error "Mistral API error (${http_code:-no response}): $error_msg"
-        exit 1
-    fi
-
-    echo "$response_body" | jq -r '.choices[0].message.content'
-}
-
-# ==============================================================================
-#  Git Operations
+#  Git helpers
 # ==============================================================================
 
 check_git_repo() {
-    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        log_error "Not inside a git repository."
-        exit 1
-    fi
+    command -v git >/dev/null 2>&1 || die "git is not installed."
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not inside a git repository."
 }
 
-get_staged_diff() {
-    if [ "$AUTO_STAGE" = true ]; then
-        git add -A
-        log_info "Staged all changes."
-    fi
+git_dir() {
+    git rev-parse --git-dir 2>/dev/null || echo ".git"
+}
 
-    local diff
-    diff=$(git diff --cached)
+rebase_in_progress() {
+    local dir
+    dir=$(git_dir)
+    [ -d "$dir/rebase-merge" ] || [ -d "$dir/rebase-apply" ]
+}
 
-    if [ -z "$diff" ]; then
-        log_error "No staged changes found. Stage your changes first with 'git add'."
-        return 1
-    fi
+unmerged_files() {
+    git diff --name-only --diff-filter=U 2>/dev/null || true
+}
 
-    printf '%s\n' "$diff"
+# Unmerged files plus tracked files that still contain conflict markers.
+conflicted_files() {
+    {
+        unmerged_files
+        git grep -Il -E '^<<<<<<<( |$)' 2>/dev/null || true
+    } | awk 'NF && !seen[$0]++'
+}
+
+file_has_markers() {
+    grep -Eq '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)' "$1"
+}
+
+# Exit with EXIT_CONFLICTS when conflicts remain, listing them on stderr.
+require_no_conflicts() {
+    local files
+    files=$(conflicted_files)
+    [ -z "$files" ] && return 0
+
+    log_error "Unresolved conflicts in $(printf '%s\n' "$files" | wc -l | xargs) file(s):"
+    printf '%s\n' "$files" | sed 's/^/  /' >&2
+    log_warn "Resolve them (edit + 'mark-resolved', or 'take <ours|theirs|both>') before committing."
+    exit "$EXIT_CONFLICTS"
 }
 
 get_diff_budget() {
-    # Max chars budget for diff context sent to the AI
-    # 16K chars ≈ ~4K tokens — costs < $0.01 even on the priciest provider
-    echo 16000
+    # Max chars of diff printed for the agent (~4K tokens)
+    echo "${GIT_PILOT_DIFF_BUDGET:-16000}"
 }
 
 truncate_diff() {
@@ -815,7 +147,7 @@ truncate_diff() {
 
     # Fits in budget — send as-is
     if [ "$length" -le "$budget" ]; then
-        echo "$diff"
+        printf '%s\n' "$diff"
         return
     fi
 
@@ -829,7 +161,6 @@ truncate_diff() {
     # Split diff by file (each starts with "diff --git"), collect into temp files
     local tmpdir
     tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' RETURN
 
     local idx=0
     local current_file=""
@@ -859,12 +190,14 @@ truncate_diff() {
         chunk=$(cat "$chunk_file")
         local chunk_len=${#chunk}
         if [ $((used + chunk_len)) -le "$available" ]; then
-            result="${result}${chunk}"
-            used=$((used + chunk_len))
+            result="${result}${chunk}"$'\n'
+            used=$((used + chunk_len + 1))
         else
             skipped=$((skipped + 1))
         fi
-    done < <(find "$tmpdir" -type f -exec wc -c {} + | grep -v total | sort -n | awk '{print $2}')
+    done < <(find "$tmpdir" -type f -exec wc -c {} + | grep -v ' total$' | sort -n | awk '{print $2}')
+
+    rm -rf "$tmpdir"
 
     # If we got nothing (single huge file), fall back to raw truncation
     if [ -z "$result" ]; then
@@ -876,245 +209,7 @@ truncate_diff() {
         footer=$'\n\n'"[... ${skipped} large file(s) omitted — ${length} chars total]"
     fi
 
-    echo "${header}${result}${footer}"
-}
-
-build_commit_prompt() {
-    local diff="$1"
-    local prompt="You are a git commit message generator. Based on the following diff, write a commit message with a title and a description."
-
-    if [ "$CONVENTIONAL" = true ]; then
-        if [ -n "$COMMIT_TYPE" ]; then
-            prompt="$prompt Use Conventional Commits format. The commit type MUST be '$COMMIT_TYPE' (e.g. $COMMIT_TYPE: description)."
-        else
-            prompt="$prompt Use Conventional Commits format (e.g. feat:, fix:, docs:, refactor:, chore:)."
-        fi
-    fi
-
-    if [ "$EMOJI" = true ]; then
-        prompt="$prompt Include a relevant emoji at the start of the title."
-    fi
-
-    if [ -n "$LANGUAGE" ] && [ "$LANGUAGE" != "en" ]; then
-        prompt="$prompt Write the commit message in $LANGUAGE."
-    fi
-
-    if [ "$BULLETS" != true ]; then
-        prompt="$prompt
-
-Rules:
-- Output ONLY the commit message, nothing else
-- Write ONLY a single-line summary title, max 72 characters, imperative mood
-- Do NOT include a description or bullet points, ONLY the title line
-- Do not wrap the message in quotes or backticks
-
-Diff:
-$diff"
-    else
-        prompt="$prompt
-
-Rules:
-- Output ONLY the commit message, nothing else
-- Line 1: short summary title, max 72 characters, imperative mood
-- Line 2: blank
-- Lines 3+: description explaining WHAT changed and WHY (2-5 bullet points starting with -)
-- Keep each bullet concise (one line)
-- Do not wrap the message in quotes or backticks
-
-Diff:
-$diff"
-    fi
-
-    printf '%s\n' "$prompt"
-}
-
-generate_commit_message() {
-    local diff
-    diff=$(get_staged_diff) || return 1
-
-    local truncated_diff
-    truncated_diff=$(truncate_diff "$diff")
-
-    local prompt
-    prompt=$(build_commit_prompt "$truncated_diff")
-
-    local provider_label="$PROVIDER"
-    [ -n "$MODEL" ] && provider_label="$PROVIDER ($MODEL)"
-    log_info "Generating commit message with $provider_label..."
-    local message
-    message=$(call_ai_api "$prompt") || return 1
-
-    # Clean up: remove surrounding quotes/backticks if present
-    message=$(printf '%s\n' "$message" | sed 's/^[`"'"'"']*//;s/[`"'"'"']*$//')
-
-    printf '%s\n' "$message"
-}
-
-resolve_keep_both() {
-    local file="$1"
-    local tmp
-    tmp=$(mktemp)
-
-    awk '
-    /^<<<<<<</ { in_conflict=1; next }
-    in_conflict && /^\|\|\|\|\|\|\|/ { skip_base=1; next }
-    in_conflict && /^=======/ { skip_base=0; next }
-    in_conflict && /^>>>>>>>/ { in_conflict=0; skip_base=0; next }
-    !skip_base { print }
-    ' "$file" > "$tmp"
-
-    mv "$tmp" "$file"
-}
-
-resolve_keep_ours() {
-    local file="$1"
-    local tmp
-    tmp=$(mktemp)
-
-    awk '
-    /^<<<<<<</ { in_conflict=1; keep=1; next }
-    in_conflict && /^\|\|\|\|\|\|\|/ { keep=0; next }
-    in_conflict && /^=======/ { keep=0; next }
-    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
-    !in_conflict || keep { print }
-    ' "$file" > "$tmp"
-
-    mv "$tmp" "$file"
-}
-
-resolve_keep_theirs() {
-    local file="$1"
-    local tmp
-    tmp=$(mktemp)
-
-    awk '
-    /^<<<<<<</ { in_conflict=1; keep=0; next }
-    in_conflict && /^\|\|\|\|\|\|\|/ { next }
-    in_conflict && /^=======/ { keep=1; next }
-    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
-    !in_conflict || keep { print }
-    ' "$file" > "$tmp"
-
-    mv "$tmp" "$file"
-}
-
-check_conflict_markers() {
-    # -I: skip binary files  -c: show count per file
-    local conflict_counts
-    conflict_counts=$(git grep -Ic '^<<<<<<<' 2>/dev/null || true)
-
-    if [ -z "$conflict_counts" ]; then
-        return 0
-    fi
-
-    local file_count
-    file_count=$(echo "$conflict_counts" | wc -l | xargs)
-
-    local total=0
-    while IFS= read -r line; do
-        local n="${line##*:}"
-        total=$((total + n))
-    done <<< "$conflict_counts"
-
-    echo "" >&2
-    log_error "Whoa, hold on! You have $total unresolved conflict(s) across $file_count file(s):"
-    echo "" >&2
-    while IFS= read -r line; do
-        local file="${line%:*}"
-        local n="${line##*:}"
-        printf "  ${RED}✗${NC} %s ${YELLOW}(%s)${NC}\n" "$file" "$n conflict$([ "$n" -gt 1 ] && echo s)" >&2
-    done <<< "$conflict_counts"
-    echo "" >&2
-    log_warn "You need to resolve these before committing or pushing."
-    echo "" >&2
-
-    # Extract just filenames for the resolve loop
-    local conflict_files
-    conflict_files=$(echo "$conflict_counts" | while IFS= read -r line; do echo "${line%:*}"; done)
-
-    local choice
-    choice=$(prompt_select "How do you want to resolve?" \
-        "Accept both (keep ours + theirs)" \
-        "Accept current (keep HEAD/ours only)" \
-        "Accept incoming (keep theirs only)" \
-        "Cancel — I'll fix it myself")
-
-    case "$choice" in
-        "Accept both (keep ours + theirs)")
-            log_info "Accepting both sides for all conflicts..."
-            while IFS= read -r f; do
-                resolve_keep_both "$f"
-                git add "$f"
-                log_success "Resolved (both): $f"
-            done <<< "$conflict_files"
-            log_success "All conflicts resolved — kept both sides."
-            ;;
-        "Accept current (keep HEAD/ours only)")
-            log_info "Accepting current (ours) for all conflicts..."
-            while IFS= read -r f; do
-                resolve_keep_ours "$f"
-                git add "$f"
-                log_success "Resolved (ours): $f"
-            done <<< "$conflict_files"
-            log_success "All conflicts resolved — kept current (HEAD) version."
-            ;;
-        "Accept incoming (keep theirs only)")
-            log_info "Accepting incoming (theirs) for all conflicts..."
-            while IFS= read -r f; do
-                resolve_keep_theirs "$f"
-                git add "$f"
-                log_success "Resolved (theirs): $f"
-            done <<< "$conflict_files"
-            log_success "All conflicts resolved — kept incoming version."
-            ;;
-        *)
-            log_info "No worries — fix your conflicts and come back!"
-            exit 0
-            ;;
-    esac
-}
-
-push_if_needed() {
-    if [ "$AUTO_PUSH" = true ]; then
-        log_info "Pushing..."
-        if ! git push 2>&1; then
-            log_warn "Push rejected — pulling with rebase first..."
-            do_pull_rebase
-            log_info "Pushing again..."
-            git push
-        fi
-        log_success "Pushed!"
-    fi
-}
-
-do_commit() {
-    check_git_repo
-    check_conflict_markers
-
-    local message
-    if ! message=$(generate_commit_message) || [ -z "$message" ]; then
-        return 1
-    fi
-
-    echo ""
-    echo -e "${BOLD}Proposed commit message:${NC}"
-    echo -e "${GREEN}─────────────────────────────────────${NC}"
-    echo "$message"
-    echo -e "${GREEN}─────────────────────────────────────${NC}"
-    echo ""
-
-    if [ "$DRY_RUN" = true ]; then
-        log_info "Dry run — no commit created."
-        return 0
-    fi
-
-    if ask_yes_no "Commit with this message?"; then
-        git commit -m "$message"
-        log_success "Committed!"
-        push_if_needed
-    else
-        log_info "Commit cancelled."
-    fi
+    printf '%s\n' "${header}${result}${footer}"
 }
 
 gather_merge_context() {
@@ -1123,21 +218,22 @@ gather_merge_context() {
 
     # Resolve actual git dir (supports worktrees where .git is a file)
     local git_dir
-    git_dir=$(git rev-parse --git-dir 2>/dev/null || echo ".git")
+    git_dir=$(git_dir)
 
     # Current branch
     local current_branch
     current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
-    ctx+="Current branch: $current_branch"$'\n'
+    ctx+="Current branch: ${current_branch:-detached HEAD}"$'\n'
 
     # Detect merge vs rebase and gather incoming branch info
     if [ -f "$git_dir/MERGE_HEAD" ]; then
         local merge_head
-        merge_head=$(cat "$git_dir/MERGE_HEAD")
+        merge_head=$(head -1 "$git_dir/MERGE_HEAD")
         local merge_msg=""
         [ -f "$git_dir/MERGE_MSG" ] && merge_msg=$(head -1 "$git_dir/MERGE_MSG")
         ctx+="Merge in progress: $merge_msg"$'\n'
         ctx+="Merge head: $merge_head"$'\n'
+        ctx+="Ours = HEAD (current branch), theirs = the branch being merged in."$'\n'
 
         # Commits from incoming branch (what's being merged in)
         local incoming_log
@@ -1169,8 +265,9 @@ gather_merge_context() {
             fi
         fi
 
-    elif [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; then
+    elif rebase_in_progress; then
         ctx+="Rebase in progress."$'\n'
+        ctx+="Ours = the upstream commits being rebased onto, theirs = the local commit being replayed."$'\n'
         local rebase_dir=""
         [ -d "$git_dir/rebase-merge" ] && rebase_dir="$git_dir/rebase-merge"
         [ -d "$git_dir/rebase-apply" ] && rebase_dir="$git_dir/rebase-apply"
@@ -1196,335 +293,271 @@ gather_merge_context() {
         ctx="${ctx:0:$budget}"$'\n'"[... context truncated]"
     fi
 
-    echo "$ctx"
+    printf '%s\n' "$ctx"
 }
 
-# shellcheck disable=SC2120
-resolve_conflicts() {
-    check_git_repo
-
-    # Accept optional file list as arguments; fall back to git unmerged files
-    local conflict_files=""
-    if [ $# -gt 0 ]; then
-        conflict_files="$1"
-    else
-        conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
-        # Also check for leftover markers in tracked files (not in unmerged state)
-        if [ -z "$conflict_files" ]; then
-            conflict_files=$(git grep -Il '^<<<<<<<' 2>/dev/null || true)
-        fi
-    fi
-
-    if [ -z "$conflict_files" ]; then
-        log_info "No merge conflicts found."
-        return 0
-    fi
-
-    local count
-    count=$(echo "$conflict_files" | wc -l | xargs)
-    log_info "Found $count file(s) with conflicts."
-
-    # Gather rich context once for all files
-    local merge_context
-    merge_context=$(gather_merge_context)
-
-    while IFS= read -r file; do
-        log_info "Resolving: $file"
-
-        local content
-        content=$(cat "$file")
-
-        # Build a context-rich prompt
-        local prompt="You are resolving a git merge conflict. You must understand the INTENT behind both sides to produce the correct resolution.
-
-=== MERGE CONTEXT ===
-$merge_context
-=== END MERGE CONTEXT ===
-
-=== CONFLICTED FILE: $file ===
-$content
-=== END FILE ===
-
-Instructions:
-- The file contains conflict markers: <<<<<<< (current/ours), ||||||| (common ancestor, if present), ======= (separator), >>>>>>> (incoming/theirs).
-- Use the merge context above to understand WHY each side made its changes.
-- Produce the correctly resolved file that preserves the intent of BOTH sides when possible.
-- If both sides changed the same thing differently, combine them logically based on the commit context.
-- Output ONLY the resolved file content. No explanations, no markdown fences, no extra text."
-
-        local resolved
-        resolved=$(call_ai_api "$prompt") || { log_error "Failed to resolve: $file"; continue; }
-
-        if [ -n "$resolved" ] && [ "$resolved" != "null" ]; then
-            echo ""
-            echo -e "${BOLD}Resolved $file:${NC}"
-            echo -e "${GREEN}─────────────────────────────────────${NC}"
-            echo "$resolved" | head -20
-            if [ "$(echo "$resolved" | wc -l)" -gt 20 ]; then
-                echo "  ... ($(echo "$resolved" | wc -l) lines total)"
-            fi
-            echo -e "${GREEN}─────────────────────────────────────${NC}"
-
-            if ask_yes_no "Apply this resolution to $file?"; then
-                printf '%s\n' "$resolved" > "$file"
-                git add "$file"
-                log_success "Resolved and staged: $file"
-            else
-                log_warn "Skipped: $file"
-            fi
-        else
-            log_error "Failed to resolve: $file"
-        fi
-    done <<< "$conflict_files"
-
-    # Check if any conflicts remain
-    local remaining
-    remaining=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
-    if [ -z "$remaining" ]; then
-        remaining=$(git grep -Il '^<<<<<<<' 2>/dev/null || true)
-    fi
-    if [ -z "$remaining" ]; then
-        log_success "All conflicts resolved!"
-    else
-        log_warn "Some conflicts remain: $remaining"
-    fi
+# Rewrite a file in place, keeping its mode.
+rewrite_with_awk() {
+    local file="$1" program="$2"
+    local tmp
+    tmp=$(mktemp)
+    awk "$program" "$file" > "$tmp"
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
 }
 
-do_pull_rebase() {
-    check_git_repo
+resolve_keep_both() {
+    rewrite_with_awk "$1" '
+    /^<<<<<<</ { in_conflict=1; next }
+    in_conflict && /^\|\|\|\|\|\|\|/ { skip_base=1; next }
+    in_conflict && /^=======/ { skip_base=0; next }
+    in_conflict && /^>>>>>>>/ { in_conflict=0; skip_base=0; next }
+    !skip_base { print }
+    '
+}
 
-    log_info "Pulling with rebase..."
+resolve_keep_ours() {
+    rewrite_with_awk "$1" '
+    /^<<<<<<</ { in_conflict=1; keep=1; next }
+    in_conflict && /^\|\|\|\|\|\|\|/ { keep=0; next }
+    in_conflict && /^=======/ { keep=0; next }
+    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
+    !in_conflict || keep { print }
+    '
+}
 
-    if git pull --rebase 2>/dev/null; then
-        log_success "Rebase completed successfully — no conflicts."
-        return 0
-    fi
+resolve_keep_theirs() {
+    rewrite_with_awk "$1" '
+    /^<<<<<<</ { in_conflict=1; keep=0; next }
+    in_conflict && /^\|\|\|\|\|\|\|/ { next }
+    in_conflict && /^=======/ { keep=1; next }
+    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
+    !in_conflict || keep { print }
+    '
+}
 
-    log_warn "Conflicts detected during rebase. Resolving with AI..."
+# ==============================================================================
+#  Commands
+# ==============================================================================
 
-    local max_iterations=10
-    local iteration=0
-
-    while [ $iteration -lt $max_iterations ]; do
-        iteration=$((iteration + 1))
-
-        local conflict_files
-        conflict_files=$(git diff --name-only --diff-filter=U)
-
-        if [ -z "$conflict_files" ]; then
-            break
-        fi
-
-        log_info "Rebase iteration $iteration — resolving conflicts..."
-        resolve_conflicts
-
-        # Check if all resolved
-        local remaining
-        remaining=$(git diff --name-only --diff-filter=U)
-        if [ -n "$remaining" ]; then
-            log_error "Unresolved conflicts remain. Aborting rebase."
-            git rebase --abort
-            exit 1
-        fi
-
-        if ! GIT_EDITOR=true git rebase --continue 2>/dev/null; then
-            # More conflicts in next commit
-            continue
-        else
-            break
-        fi
+cmd_commit_context() {
+    local auto_stage=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -a|--auto-stage) auto_stage=true; shift ;;
+            *) die "Unknown option for commit-context: $1" ;;
+        esac
     done
 
-    if [ $iteration -ge $max_iterations ]; then
-        log_error "Too many rebase iterations. Aborting."
-        git rebase --abort
-        exit 1
+    require_no_conflicts
+
+    if [ "$auto_stage" = true ]; then
+        git add -A
+        log_info "Staged all changes."
     fi
 
-    log_success "Rebase completed with AI conflict resolution!"
+    local diff
+    diff=$(git diff --cached)
+    [ -n "$diff" ] || die "No staged changes found. Stage your changes first with 'git add' (or pass -a)."
+
+    printf '%s\n' "Branch: $(git branch --show-current 2>/dev/null || true)"
+    printf '\n%s\n' "Staged files:"
+    git diff --cached --name-status
+    local recent
+    recent=$(git log --format='%s' -10 2>/dev/null || true)
+    if [ -n "$recent" ]; then
+        printf '\n%s\n%s\n' "Recent commit subjects (match their style):" "$recent"
+    fi
+    printf '\n%s\n' "Diff:"
+    truncate_diff "$diff"
+}
+
+cmd_push() {
+    log_info "Pushing..."
+    if git push >&2; then
+        log_success "Pushed!"
+        return 0
+    fi
+    log_error "Push failed or was rejected. If the remote has new commits, run 'rebase start', then 'push' again."
+    exit "$EXIT_PUSH_REJECTED"
+}
+
+cmd_commit() {
+    local message_file="" message="" have_message=false dry_run=false push=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -F|--file)
+                [ -n "${2:-}" ] || die "Option $1 requires a file path (or - for stdin)."
+                message_file="$2"; have_message=true; shift 2 ;;
+            -m|--message)
+                [ $# -ge 2 ] || die "Option $1 requires a message."
+                message="$2"; have_message=true; shift 2 ;;
+            -d|--dry-run) dry_run=true; shift ;;
+            -P|--push) push=true; shift ;;
+            *) die "Unknown option for commit: $1" ;;
+        esac
+    done
+    [ "$have_message" = true ] || die "commit needs a message: -F <file>, -F - (stdin) or -m <message>."
+
+    if [ -n "$message_file" ]; then
+        if [ "$message_file" = "-" ]; then
+            message=$(cat)
+        else
+            [ -f "$message_file" ] || die "Message file not found: $message_file"
+            message=$(cat "$message_file")
+        fi
+    fi
+    [ -n "$(printf '%s' "$message" | tr -d '[:space:]')" ] || die "Commit message is empty."
+
+    require_no_conflicts
+    if git diff --cached --quiet && [ ! -f "$(git_dir)/MERGE_HEAD" ]; then
+        die "No staged changes found. Stage your changes first with 'git add'."
+    fi
+
+    if [ "$dry_run" = true ]; then
+        printf '%s\n' "$message"
+        log_info "Dry run — no commit created."
+        return 0
+    fi
+
+    printf '%s\n' "$message" | git commit -F - >&2 || die "git commit failed."
+    git rev-parse HEAD
+    log_success "Committed!"
+
+    if [ "$push" = true ]; then
+        cmd_push
+    fi
+}
+
+cmd_conflicts() {
+    conflicted_files
+}
+
+cmd_merge_context() {
+    local files
+    files=$(conflicted_files)
+    if [ -n "$files" ]; then
+        printf '%s\n%s\n\n' "Conflicted files:" "$files"
+    else
+        printf '%s\n\n' "Conflicted files: none"
+    fi
+    gather_merge_context
+}
+
+cmd_take() {
+    local strategy="${1:-}"
+    case "$strategy" in
+        ours|theirs|both) shift ;;
+        *) die "Usage: take <ours|theirs|both> <file>..." ;;
+    esac
+    [ $# -gt 0 ] || die "Usage: take <ours|theirs|both> <file>..."
+
+    local file
+    for file in "$@"; do
+        [ -f "$file" ] || die "File not found: $file"
+        "resolve_keep_$strategy" "$file"
+        git add -- "$file"
+        log_success "Resolved ($strategy): $file"
+    done
+}
+
+cmd_mark_resolved() {
+    [ $# -gt 0 ] || die "Usage: mark-resolved <file>..."
+    local file failed=false
+    for file in "$@"; do
+        if [ -f "$file" ] && file_has_markers "$file"; then
+            log_error "Conflict markers remain in: $file"
+            failed=true
+        fi
+    done
+    [ "$failed" = false ] || exit "$EXIT_CONFLICTS"
+
+    for file in "$@"; do
+        git add -A -- "$file"
+        log_success "Staged: $file"
+    done
+}
+
+# After a failed rebase step: 3 when stopped on conflicts, 1 otherwise.
+rebase_failure() {
+    if rebase_in_progress && [ -n "$(unmerged_files)" ]; then
+        log_warn "Rebase stopped on conflicts:"
+        unmerged_files | sed 's/^/  /' >&2
+        log_info "Resolve them, then run 'rebase continue' (or 'rebase abort')."
+        exit "$EXIT_REBASE_STOPPED"
+    fi
+    die "$1"
+}
+
+cmd_rebase() {
+    local sub="${1:-}"
+    case "$sub" in
+        start)
+            rebase_in_progress && die "A rebase is already in progress. Use 'rebase continue' or 'rebase abort'."
+            log_info "Pulling with rebase..."
+            if git pull --rebase >&2; then
+                log_success "Rebase completed — no conflicts."
+                return 0
+            fi
+            rebase_failure "git pull --rebase failed."
+            ;;
+        continue)
+            rebase_in_progress || die "No rebase in progress."
+            local remaining
+            remaining=$(conflicted_files)
+            if [ -n "$remaining" ]; then
+                log_error "Unresolved conflicts remain:"
+                printf '%s\n' "$remaining" | sed 's/^/  /' >&2
+                exit "$EXIT_REBASE_STOPPED"
+            fi
+            if GIT_EDITOR=true git rebase --continue >&2 && ! rebase_in_progress; then
+                log_success "Rebase completed."
+                return 0
+            fi
+            rebase_failure "git rebase --continue failed."
+            ;;
+        abort)
+            rebase_in_progress || die "No rebase in progress."
+            git rebase --abort >&2
+            log_success "Rebase aborted."
+            ;;
+        *)
+            die "Usage: rebase <start|continue|abort>"
+            ;;
+    esac
 }
 
 # ==============================================================================
-#  Argument Parsing
+#  Main
 # ==============================================================================
 
-# Check for command as first argument
-if [ $# -gt 0 ]; then
-    case "$1" in
-        setup|config|commit|resolve|rebase)
-            ACTION="$1"
-            shift
-            ;;
-        feat|fix|docs|refactor|chore|style|test|perf|ci|build|revert)
-            COMMIT_TYPE="$1"
-            CONVENTIONAL=true
-            shift
-            ;;
-    esac
-fi
+main() {
+    local command="${1:-}"
+    [ $# -gt 0 ] && shift
 
-while [[ $# -gt 0 ]]; do
-    key="$1"
-    case $key in
-        -p|--provider)
-            [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
-            PROVIDER="$2"
-            shift; shift
-            ;;
-        -m|--model)
-            [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
-            MODEL="$2"
-            MODEL_EXPLICIT=true
-            shift; shift
-            ;;
-        --api-key)
-            [[ -z "${2:-}" ]] && { log_error "Option $1 requires an argument."; exit 1; }
-            API_KEY="$2"
-            shift; shift
-            ;;
-        -d|--dry-run)
-            DRY_RUN=true
-            shift
-            ;;
-        -a|--auto-stage)
-            AUTO_STAGE=true
-            shift
-            ;;
-        --auto-push|-P)
-            AUTO_PUSH=true
-            shift
-            ;;
-        -c|--conventional)
-            CONVENTIONAL=true
-            shift
-            ;;
-        -e|--emoji)
-            EMOJI=true
-            shift
-            ;;
-        -l|--lang)
-            [[ -z "${2:-}" || "$2" == -* ]] && { log_error "Option $1 requires an argument."; exit 1; }
-            LANGUAGE="$2"
-            shift; shift
-            ;;
-        --resolve)
-            ACTION="resolve"
-            shift
-            ;;
-        --rebase)
-            ACTION="rebase"
-            shift
-            ;;
-        --setup)
-            ACTION="setup"
-            shift
-            ;;
-        -y|--yes)
-            SKIP_CONFIRM=true
-            shift
-            ;;
-        -B|--bullets)
-            BULLETS=true
-            shift
-            ;;
-        --no-bullets)
-            BULLETS=false
-            shift
-            ;;
-        -v|--version)
-            echo "git-pilot v$VERSION"
-            exit 0
-            ;;
-        -h|--help)
-            print_banner
-            print_usage
-            exit 0
-            ;;
+    case "$command" in
+        -v|--version) printf 'git-pilot v%s\n' "$VERSION"; return 0 ;;
+        -h|--help|help) print_usage; return 0 ;;
+        "") print_usage >&2; exit "$EXIT_ERROR" ;;
+    esac
+
+    check_git_repo
+
+    case "$command" in
+        commit-context) cmd_commit_context "$@" ;;
+        commit)         cmd_commit "$@" ;;
+        conflicts)      cmd_conflicts "$@" ;;
+        merge-context)  cmd_merge_context "$@" ;;
+        take)           cmd_take "$@" ;;
+        mark-resolved)  cmd_mark_resolved "$@" ;;
+        rebase)         cmd_rebase "$@" ;;
+        push)           cmd_push "$@" ;;
         *)
-            log_error "Unknown argument: $1"
-            print_usage
-            exit 1
+            log_error "Unknown command: $command"
+            print_usage >&2
+            exit "$EXIT_ERROR"
             ;;
     esac
-done
+}
 
-# ==============================================================================
-#  Main Flow
-# ==============================================================================
-
-# Setup and config don't need git repo or full API config
-if [ "$ACTION" = "setup" ]; then
-    run_setup
-    exit 0
-fi
-
-if [ "$ACTION" = "config" ]; then
-    show_config
-    exit 0
-fi
-
-# Load config
-load_config
-
-# Default provider
-if [ -z "$PROVIDER" ]; then
-    PROVIDER="claude-code"
-fi
-
-# Validate provider
-case "$PROVIDER" in
-    claude-code|codex|anthropic|openai|gemini|mistral) ;;
-    *)
-        log_error "Unknown provider: $PROVIDER"
-        log_info "Valid providers: claude-code, codex, anthropic, openai, gemini, mistral"
-        exit 1
-        ;;
-esac
-
-# Default model per provider
-if [ "$PROVIDER" = "codex" ] && [ "$MODEL_EXPLICIT" = false ]; then
-    MODEL=""
-elif [ -z "$MODEL" ]; then
-    MODEL=$(get_default_model "$PROVIDER")
-fi
-
-# Default language
-if [ -z "$LANGUAGE" ]; then
-    LANGUAGE="en"
-fi
-
-# Check we're in a git repo first (before dependency checks)
-require_command git
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    log_error "Not inside a git repository."
-    exit 1
-fi
-
-# Check provider dependencies
-if is_cli_provider "$PROVIDER"; then
-    # CLI-based: check the CLI tool is installed
-    case "$PROVIDER" in
-        claude-code) require_command claude "claude-code" ;;
-        codex)       require_command codex "codex" ;;
-    esac
-else
-    # API-based: need curl + jq + API key
-    require_command curl
-    require_command jq
-    if [ -z "$API_KEY" ]; then
-        log_error "No API key configured for $PROVIDER. Run 'git-pilot setup' or set --api-key / environment variable."
-        log_info "Environment variables: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY"
-        exit 1
-    fi
-fi
-
-# Route action
-case "$ACTION" in
-    commit)   do_commit ;;
-    resolve)  resolve_conflicts ;;
-    rebase)   do_pull_rebase ;;
-    *)
-        log_error "Unknown action: $ACTION"
-        exit 1
-        ;;
-esac
+main "$@"

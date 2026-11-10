@@ -3,32 +3,39 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-green.svg)](script.sh)
 
-AI-powered git automation: smart commits, conflict resolution, and auto-rebase. Pure Bash.
+Git autopilot for coding agents: AI-written commits, conflict resolution, and auto-rebase. Pure Bash.
+
+git-pilot is an [agent skill](https://skills.sh) plus a small CLI. The agent you already use (Claude Code, Codex, Cursor, OpenCode, and others) writes the commit messages and resolves the conflicts. The `git-pilot` CLI does the Git plumbing and the safety checks. git-pilot never calls a model, needs no API key, and is tied to no provider.
 
 ## Features
 
-- **AI commit messages** — Generate meaningful commit messages from your staged diff (title only by default, optional bullet points with `--bullets`)
-- **Multi-provider** — Claude Code & Codex (CLI), Anthropic, OpenAI, Gemini & Mistral (API)
-- **CLI-first** — Uses `claude` and `codex` CLIs directly — no API key needed for those
-- **Budget-friendly defaults** — Uses compact defaults for API providers while Codex follows your CLI configuration
-- **Smart diff truncation** — Prioritizes small file diffs to maximize info sent to the AI (16K chars budget)
-- **Conflict resolution** — AI-powered merge conflict resolution
-- **Auto-rebase** — `pull --rebase` with automatic conflict resolution
-- **Conventional Commits** — Optional formatting with `--conventional`
-- **Emoji support** — Add emoji to commit messages with `--emoji`
-- **Multi-language** — Generate commit messages in any language
-- **Dry run** — Preview commit messages without committing
-- **Pure Bash** — Single script, no heavy runtime dependencies
+- **AI commit messages**: your agent writes the message from the staged diff and follows the repository's conventions (Conventional Commits, emoji, language, title-only or bullet points).
+- **Conflict resolution**: rich merge and rebase context so the agent resolves each hunk while preserving the intent of both sides.
+- **Auto-rebase**: `pull --rebase` loop with stable exit codes for each conflict round.
+- **Blanket strategies**: keep ours, theirs, or both for every hunk in a file.
+- **Safety checks**: refuses to commit with conflict markers or unmerged files, supports dry runs, never force-pushes.
+- **Smart diff truncation**: keeps the most complete small file diffs within a 16K-character budget.
+- **Agent-agnostic**: works with any agent that supports skills, and from the terminal.
 
 ## Installation
 
-### Homebrew
+### As an agent skill (recommended)
+
+```bash
+npx skills add maxgfr/git-pilot            # current project
+npx skills add maxgfr/git-pilot -g         # all projects (user level)
+npx skills add maxgfr/git-pilot -a codex   # a specific agent ('*' for all)
+```
+
+The skill bundles its helper script, so nothing else needs to be installed.
+
+### As a CLI
 
 ```bash
 brew install maxgfr/tap/git-pilot
 ```
 
-### Manual
+or
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maxgfr/git-pilot/main/script.sh -o git-pilot
@@ -36,157 +43,67 @@ chmod +x git-pilot
 sudo mv git-pilot /usr/local/bin/
 ```
 
-### Prerequisites
+Requires Bash and Git.
 
-For CLI providers (no API key needed):
-- **Claude Code**: Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` CLI)
-- **Codex**: Install [OpenAI Codex](https://github.com/openai/codex) (`codex` CLI)
+## Usage with an agent
 
-For API providers:
-- `curl` and `jq` (installed automatically if missing)
-- An API key for the chosen provider
+Ask your agent in plain language:
 
-## Quick Start
+```text
+commit my staged changes
+commit everything as a fix, with bullet points, in French
+preview a commit message for this diff (dry run)
+resolve the merge conflicts
+pull with rebase and fix the conflicts, then push
+```
+
+The agent shows you the message or the resolution before it commits, pushes, or applies anything, unless you have already told it to go ahead.
+
+## CLI reference
+
+```
+git-pilot <command> [options]
+```
+
+| Command | Description |
+|---|---|
+| `commit-context [-a]` | Print the branch, staged files, recent commit subjects, and the staged diff. `-a` stages all changes first |
+| `commit -F <file\|-> \| -m <msg> [--dry-run] [--push]` | Commit the staged changes with the given message and print the new SHA |
+| `conflicts` | List the files with unresolved conflicts |
+| `merge-context` | Print the merge or rebase context: both sides' commits and diff stats |
+| `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them |
+| `mark-resolved <file>...` | Stage the files after checking that no conflict markers remain |
+| `rebase start\|continue\|abort` | `git pull --rebase`, continue after resolving conflicts, or abort |
+| `push` | `git push` |
+| `--version`, `--help` | |
+
+stdout carries data and stderr carries diagnostics, so the output is easy to pipe:
 
 ```bash
-# 1. Configure your provider
-git-pilot setup
-
-# 2. Stage your changes and generate a commit
-git add .
-git-pilot
+git-pilot commit-context | your-favorite-llm "write a commit message" > msg.txt
+git-pilot commit -F msg.txt
 ```
 
-With Claude Code (default), no API key is needed — just have `claude` installed.
+| Exit code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Error (not a repository, nothing staged, bad usage...) |
+| `2` | Conflict markers or unmerged files present |
+| `3` | Rebase stopped on conflicts: resolve them, then run `rebase continue` |
+| `4` | Push rejected: run `rebase start`, then `push` |
 
-## Usage
+During a rebase, "ours" is the upstream and "theirs" is your commit being replayed.
 
-```
-git-pilot [command] [options]
-```
+## Migrating from 1.x
 
-### Commands
+Version 2 removes the built-in AI providers (`claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral`), along with `setup`, `config`, API keys, and the provider and formatting flags. The AI work now happens in the agent that runs the skill.
 
-| Command   | Description                                    |
-|-----------|------------------------------------------------|
-| `commit`  | Generate AI commit message and commit (default)|
-| `<type>`  | Force conventional commit type (`feat`, `fix`, `docs`, `refactor`, `chore`, `style`, `test`, `perf`, `ci`, `build`, `revert`) |
-| `resolve` | Resolve merge conflicts with AI                |
-| `rebase`  | Pull --rebase with AI conflict resolution      |
-| `setup`   | Run interactive configuration wizard           |
-| `config`  | Show current configuration                     |
-
-### Options
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--provider <name>` | `-p` | Provider: `claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral` |
-| `--model <name>` | `-m` | Optional model override (Codex otherwise uses its CLI configuration) |
-| `--api-key <key>` | | API key (for API providers: anthropic, openai, gemini, mistral) |
-| `--dry-run` | `-d` | Preview commit message without committing |
-| `--auto-stage` | `-a` | Stage all changes before commit |
-| `--auto-push` | `-P` | Push after commit |
-| `--conventional` | `-c` | Use Conventional Commits format |
-| `--emoji` | `-e` | Add emoji to commit message |
-| `--lang <code>` | `-l` | Language for commit message (e.g. `en`, `fr`, `es`) |
-| `--bullets` | `-B` | Include bullet points in description |
-| `--no-bullets` | | Title only, no bullet points (default) |
-| `--yes` | `-y` | Skip confirmation prompts |
-| `--version` | `-v` | Show version |
-| `--help` | `-h` | Show help |
-
-## Examples
-
-```bash
-# Basic commit with Claude Code (default, uses haiku)
-git add .
-git-pilot
-
-# Auto-stage + conventional commits + emoji
-git-pilot -a -c -e
-
-# Force a conventional commit type
-git-pilot fix
-git-pilot feat -B    # 'feat' type, with bullet points
-
-# Dry run (preview only)
-git-pilot -d
-
-# Use Codex CLI
-git-pilot -p codex
-
-# Override the configured Codex model for one invocation
-git-pilot -p codex -m <model-id>
-
-# Use Anthropic API
-git-pilot -p anthropic
-
-# Use OpenAI API with a specific model
-git-pilot -p openai -m gpt-5-mini
-
-# Commit in French
-git-pilot -l fr
-
-# Resolve merge conflicts with AI
-git-pilot resolve
-
-# Pull --rebase with AI conflict resolution
-git-pilot rebase
-
-# Show current config
-git-pilot config
-
-# Non-interactive mode (auto-stage + skip confirm + push)
-git-pilot -a -y -P
-```
-
-## Configuration
-
-Configuration is stored at `~/.config/git-pilot/config` (XDG-compliant) with `chmod 600` to protect your API key.
-
-```ini
-# git-pilot configuration
-provider=claude-code
-api_key=
-model=haiku
-max_tokens=1024
-auto_stage=false
-auto_push=false
-language=en
-conventional=true
-emoji=false
-bullets=false
-skip_confirm=false
-```
-
-You can view your active configuration at any time with `git-pilot config`.
-
-### Environment Variables
-
-API keys can be provided via environment variables (fallback for API providers):
-
-| Provider  | Environment Variable |
-|-----------|---------------------|
-| Anthropic | `ANTHROPIC_API_KEY`  |
-| OpenAI    | `OPENAI_API_KEY`     |
-| Gemini    | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
-| Mistral   | `MISTRAL_API_KEY`    |
-
-CLI providers (`claude-code`, `codex`) don't need API keys — they use their own authentication.
-Codex runs non-interactively in an ephemeral, read-only sandbox; only its final response is used by git-pilot.
-
-## Supported Providers
-
-| Provider | Type | Default Model | Cost |
-|----------|------|---------------|------|
-| `claude-code` | CLI | `haiku` | Free (uses your Claude subscription) |
-| `codex` | CLI | Codex configuration | Uses your Codex authentication |
-| `anthropic` | API | `claude-haiku-4-5` | ~$1.00/M input tokens |
-| `openai` | API | `gpt-5-mini` | ~$0.25/M input tokens |
-| `gemini` | API | `gemini-2.5-flash-lite` | ~$0.075/M input tokens |
-| `mistral` | API | `mistral-small-latest` | ~$0.06/M input tokens |
-
-API-provider defaults favor compact models. CLI providers can be overridden with `--model`.
+| 1.x | 2.x |
+|---|---|
+| `git-pilot` / `git-pilot -a -c -e -l fr` | Ask your agent: "commit everything, conventional, with emoji, in French" |
+| `git-pilot resolve` | "resolve the conflicts" (the agent uses `conflicts`, `merge-context`, `mark-resolved`) |
+| `git-pilot rebase` | "pull with rebase and fix the conflicts" (`rebase start` / `continue`) |
+| `git-pilot setup` / `config` | Not needed. You can delete `~/.config/git-pilot/` |
 
 ## License
 
