@@ -9,7 +9,7 @@
 
 set -eo pipefail
 
-VERSION="2.0.0"
+VERSION="2.0.1"
 
 # Exit codes
 EXIT_ERROR=1
