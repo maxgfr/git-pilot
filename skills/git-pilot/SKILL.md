@@ -117,8 +117,8 @@ unrelated work:
 ## Resolve conflicts
 
 1. `scripts/git-pilot.sh conflicts` lists the files; empty output means none.
-2. `scripts/git-pilot.sh merge-context` explains the situation: merge or
-   rebase, both sides' commits and diff stats. Note which side is "ours": in a
+2. `scripts/git-pilot.sh merge-context` explains the situation: merge,
+   rebase, cherry-pick or revert, with both sides' commits and diff stats. Note which side is "ours": in a
    merge it is the current branch; **during a rebase it is the upstream**, and
    "theirs" is the local commit being replayed.
 3. For each file, read it and resolve every hunk between `<<<<<<<`,
@@ -138,7 +138,9 @@ unrelated work:
    side's whole version, which deletes the file when that side deleted it;
    `both` exits `1` on such a file. A file that is not in conflict is refused.
 6. Finish: for a merge, commit (see **Commit**, the message can be the
-   default `Merge branch '…'`); for a rebase, continue below.
+   default `Merge branch '…'`); for a rebase, continue below; for a
+   cherry-pick or a revert, run the `--continue` command that
+   `merge-context` prints.
 
 ## Rebase (pull --rebase)
 

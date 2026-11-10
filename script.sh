@@ -73,7 +73,7 @@ Pull request:
 
 Conflicts:
   conflicts                           List files with unresolved conflicts
-  merge-context                       Print merge/rebase context for conflict resolution
+  merge-context                       Print merge, rebase, cherry-pick or revert context for conflict resolution
   take <ours|theirs|both> <file>...   Resolve every conflict in the files with one strategy and stage them
   mark-resolved <file>...             Stage files after checking no conflict markers remain
 
@@ -352,6 +352,21 @@ gather_merge_context() {
                 ctx+="Current patch: $(head -3 "$rebase_dir/message")"$'\n'
             fi
         fi
+
+    # After the rebase check: a rebase replays commits with the same machinery
+    # and can leave a CHERRY_PICK_HEAD of its own.
+    elif [ -f "$dir/CHERRY_PICK_HEAD" ]; then
+        ctx+="Cherry-pick in progress: $(git_plain log --oneline -1 CHERRY_PICK_HEAD 2>/dev/null || true)"$'\n'
+        ctx+="Ours = HEAD (current branch), theirs = the commit being picked."$'\n'
+        ctx+="Once resolved and staged, finish with: git -c core.editor=true cherry-pick --continue"$'\n'
+        ctx+=$'\n'"Changes of the picked commit (theirs):"$'\n'"$(git_plain show --stat --format= CHERRY_PICK_HEAD 2>/dev/null || true)"$'\n'
+
+    elif [ -f "$dir/REVERT_HEAD" ]; then
+        ctx+="Revert in progress: $(git_plain log --oneline -1 REVERT_HEAD 2>/dev/null || true)"$'\n'
+        ctx+="Ours = HEAD (current branch), theirs = the state before the reverted commit."$'\n'
+        ctx+="Once resolved and staged, finish with: git -c core.editor=true revert --continue"$'\n'
+        ctx+=$'\n'"Changes of the reverted commit (being undone):"$'\n'"$(git_plain show --stat --format= REVERT_HEAD 2>/dev/null || true)"$'\n'
+
     else
         # No active merge/rebase — just provide recent history for context
         local recent_log
