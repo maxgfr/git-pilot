@@ -189,6 +189,8 @@ load_settings() {
 }
 
 # Usage: truncate_diff <diff> <stat shown when the diff is truncated>
+# A diff over the budget is cut per file: the smallest file diffs are kept whole
+# (most information per character) and printed in their original order.
 truncate_diff() {
     local diff="$1"
     local stat="$2"
@@ -201,67 +203,45 @@ truncate_diff() {
         return
     fi
 
-    # Smart truncation: stat overview + fit as many complete file diffs as possible
+    # A stat with one line per file can outgrow the budget on its own: keep its summary line.
+    if [ "${#stat}" -gt $((budget / 2)) ]; then
+        stat="${stat##*$'\n'}"
+    fi
     local header="File diffs (most relevant):"$'\n'
     if [ -n "$stat" ]; then
         header="Changes overview:"$'\n'"${stat}"$'\n\n'"${header}"
     fi
-    local footer=$'\n\n'"[... ${length} chars total, truncated to fit budget]"
-    local available=$((budget - ${#header} - ${#footer}))
+    # Room left for file diffs once the header and the closing notice (~80 chars) are counted.
+    local available=$((budget - ${#header} - 80))
     [ "$available" -gt 0 ] || available=0
 
-    # Split diff by file (each starts with "diff --git"), collect into temp files
-    local tmpdir
-    tmpdir=$(mktemp -d)
+    # Pass 1, linear in the diff: the size of each file diff (each starts with
+    # "diff --git") as "index size", smallest first, then the indexes that fit.
+    # awk counts bytes or characters depending on the implementation; bytes only
+    # overestimate, so the budget holds either way.
+    local selection skipped keep
+    selection=$(printf '%s\n' "$diff" |
+        awk '/^diff --git / { if (n) print n, size; n++; size = 0 }
+             { if (!n) n = 1; size += length($0) + 1 }
+             END { if (n) print n, size }' |
+        sort -k2,2n -k1,1n |
+        awk -v available="$available" '
+             { if (used + $2 <= available) { used += $2; keep = keep " " $1 } else skipped++ }
+             END { print skipped + 0 " " keep }')
+    skipped=${selection%% *}
+    keep=${selection#* }
 
-    local idx=0
-    local current_file=""
-
-    while IFS= read -r line; do
-        if [[ "$line" == "diff --git"* ]]; then
-            if [ -n "$current_file" ]; then
-                printf '%s' "$current_file" > "$tmpdir/$idx"
-                idx=$((idx + 1))
-            fi
-            current_file="$line"$'\n'
-        else
-            current_file="${current_file}${line}"$'\n'
-        fi
-    done <<< "$diff"
-    if [ -n "$current_file" ]; then
-        printf '%s' "$current_file" > "$tmpdir/$idx"
+    printf '%s' "$header"
+    if [ -n "${keep// /}" ]; then
+        # Pass 2: print the kept file diffs, numbered exactly as in pass 1.
+        printf '%s\n' "$diff" |
+            awk -v keep="$keep " '/^diff --git / { n++ } { if (!n) n = 1 } index(keep, " " n " ")'
+        printf '\n%s\n' "[... ${skipped} large file(s) omitted — ${length} chars total]"
+    else
+        # Not even the smallest file diff fits: show the start of the diff.
+        printf '%s\n' "${diff:0:$available}"
+        printf '\n%s\n' "[... ${skipped} large file(s) omitted, diff cut to fit — ${length} chars total]"
     fi
-
-    # Sort file chunks by size (smallest first = most info per char)
-    local result=""
-    local used=0
-    local skipped=0
-
-    while IFS= read -r chunk_file; do
-        local chunk
-        chunk=$(cat "$chunk_file")
-        local chunk_len=${#chunk}
-        if [ $((used + chunk_len)) -le "$available" ]; then
-            result="${result}${chunk}"$'\n'
-            used=$((used + chunk_len + 1))
-        else
-            skipped=$((skipped + 1))
-        fi
-    done < <(find "$tmpdir" -type f -exec wc -c {} + | grep -v ' total$' | sort -n | awk '{print $2}')
-
-    rm -rf "$tmpdir"
-
-    # If we got nothing (single huge file), fall back to raw truncation
-    if [ -z "$result" ]; then
-        result="${diff:0:$available}"
-        skipped=1
-    fi
-
-    if [ "$skipped" -gt 0 ]; then
-        footer=$'\n\n'"[... ${skipped} large file(s) omitted — ${length} chars total]"
-    fi
-
-    printf '%s\n' "${header}${result}${footer}"
 }
 
 gather_merge_context() {
@@ -561,7 +541,10 @@ cmd_commit_context() {
         printf '%s\n' "(none: the merge in progress resolves to the current branch's content)"
         return 0
     fi
-    truncate_diff "$diff" "$(git_plain diff --cached --stat)"
+    # The stat is only shown with a truncated diff: skip the extra git call otherwise.
+    local stat=""
+    [ "${#diff}" -le "$DIFF_BUDGET" ] || stat=$(git_plain diff --cached --stat)
+    truncate_diff "$diff" "$stat"
 }
 
 # Print "status<TAB>+added<TAB>-deleted<TAB>path" lines for a diff (extra args go to git diff).

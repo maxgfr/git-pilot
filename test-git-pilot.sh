@@ -155,6 +155,18 @@ assert_contains "large diff is truncated" "$OUT" "large file(s) omitted"
 assert_contains "small files survive truncation" "$OUT" "+small change"
 if [ "${#OUT}" -lt 18000 ]; then pass "truncated output stays near budget"; else fail "truncated output stays near budget (${#OUT} chars)"; fi
 
+
+# Kept file diffs come in diff order, and a stat too long for the budget shrinks to its summary.
+printf '%s\n' "a" "b" "c" "d" "e" "f" "g" "h" > "$big/a-medium.txt"
+git -C "$big" add -A
+run "$big" commit-context
+assert_contains "truncation keeps every file diff that fits" "$OUT" "+++ b/a-medium.txt"
+assert_contains "kept file diffs stay in diff order" "${OUT%%+++ b/small.txt*}" "+++ b/a-medium.txt"
+assert_contains "truncation counts the omitted files" "$OUT" "[... 1 large file(s) omitted"
+run_env "$big" GIT_PILOT_DIFF_BUDGET=300 commit-context
+assert_contains "an oversized stat keeps its summary line" "$OUT" "3 files changed"
+assert_not_contains "an oversized stat drops its per-file lines" "$OUT" "large.txt |"
+
 run_env "$big" GIT_PILOT_DIFF_BUDGET=16k commit-context
 assert_eq "an invalid diff budget exits 1" "$RC" "1"
 assert_contains "an invalid diff budget is named" "$ERR" "GIT_PILOT_DIFF_BUDGET must be"
