@@ -121,6 +121,13 @@ repo_root() {
     git rev-parse --show-toplevel
 }
 
+# Name of the checked-out branch, or "detached HEAD".
+current_branch() {
+    local branch
+    branch=$(git branch --show-current 2>/dev/null || true)
+    printf '%s\n' "${branch:-detached HEAD}"
+}
+
 # git for output that is printed or parsed: no colors and raw, unquoted paths,
 # whatever the user's configuration says.
 git_plain() {
@@ -249,20 +256,17 @@ gather_merge_context() {
     local ctx=""
 
     # Resolve actual git dir (supports worktrees where .git is a file)
-    local git_dir
-    git_dir=$(git_dir)
+    local dir
+    dir=$(git_dir)
 
-    # Current branch
-    local current_branch
-    current_branch=$(git branch --show-current 2>/dev/null || echo "unknown")
-    ctx+="Current branch: ${current_branch:-detached HEAD}"$'\n'
+    ctx+="Current branch: $(current_branch)"$'\n'
 
     # Detect merge vs rebase and gather incoming branch info
-    if [ -f "$git_dir/MERGE_HEAD" ]; then
+    if [ -f "$dir/MERGE_HEAD" ]; then
         local merge_head
-        merge_head=$(head -1 "$git_dir/MERGE_HEAD")
+        merge_head=$(head -1 "$dir/MERGE_HEAD")
         local merge_msg=""
-        [ -f "$git_dir/MERGE_MSG" ] && merge_msg=$(head -1 "$git_dir/MERGE_MSG")
+        [ -f "$dir/MERGE_MSG" ] && merge_msg=$(head -1 "$dir/MERGE_MSG")
         ctx+="Merge in progress: $merge_msg"$'\n'
         ctx+="Merge head: $merge_head"$'\n'
         ctx+="Ours = HEAD (current branch), theirs = the branch being merged in."$'\n'
@@ -301,8 +305,8 @@ gather_merge_context() {
         ctx+="Rebase in progress."$'\n'
         ctx+="Ours = the upstream commits being rebased onto, theirs = the local commit being replayed."$'\n'
         local rebase_dir=""
-        [ -d "$git_dir/rebase-merge" ] && rebase_dir="$git_dir/rebase-merge"
-        [ -d "$git_dir/rebase-apply" ] && rebase_dir="$git_dir/rebase-apply"
+        [ -d "$dir/rebase-merge" ] && rebase_dir="$dir/rebase-merge"
+        [ -d "$dir/rebase-apply" ] && rebase_dir="$dir/rebase-apply"
 
         if [ -n "$rebase_dir" ]; then
             [ -f "$rebase_dir/head-name" ] && ctx+="Rebasing: $(cat "$rebase_dir/head-name")"$'\n'
@@ -534,7 +538,7 @@ cmd_commit_context() {
         die "No staged changes found. Stage your changes first with 'git add' (or pass -a)."
     fi
 
-    printf '%s\n' "Branch: $(git branch --show-current 2>/dev/null || true)"
+    printf 'Branch: %s\n' "$(current_branch)"
     printf '\n%s\n' "Staged files:"
     git_plain diff --cached --name-status
 
@@ -605,9 +609,8 @@ untracked_summary() {
 cmd_status() {
     [ $# -eq 0 ] || die "status takes no arguments."
 
-    local branch upstream counts
-    branch=$(git branch --show-current 2>/dev/null || true)
-    printf 'Branch: %s\n' "${branch:-detached HEAD}"
+    local upstream counts
+    printf 'Branch: %s\n' "$(current_branch)"
     upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
     if [ -n "$upstream" ]; then
         counts=$(git rev-list --left-right --count "HEAD...$upstream" 2>/dev/null || printf '0\t0')
@@ -661,9 +664,7 @@ cmd_branch_context() {
         log_warn "The branch has no upstream yet; push it before opening a pull request."
     fi
 
-    local branch
-    branch=$(git branch --show-current 2>/dev/null || true)
-    printf 'Branch: %s\n' "${branch:-detached HEAD}"
+    printf 'Branch: %s\n' "$(current_branch)"
     printf 'Base: %s (merge base %s)\n' "$base" "$(git rev-parse --short "$merge_base")"
 
     printf '\n%s\n%s\n' "Commits (oldest first):" "$commits"

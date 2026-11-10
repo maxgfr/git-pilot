@@ -433,6 +433,13 @@ assert_contains "status shows staged files with counts" "$OUT" "A +1 -0 staged.t
 assert_contains "status shows unstaged files with counts" "$OUT" "M +1 -0 tracked.txt"
 assert_contains "status shows untracked files with sizes" "$OUT" "4 untracked.txt"
 
+git -C "$st" checkout -q --detach
+run "$st" status
+assert_contains "status names a detached HEAD" "$OUT" "Branch: detached HEAD"
+run "$st" commit-context
+assert_contains "commit-context names a detached HEAD" "$OUT" "Branch: detached HEAD"
+git -C "$st" checkout -q main
+
 # Untracked entries that are not readable regular files are listed without a size.
 printf '%s\n' "hello" > "$st/my notes.txt"
 git init -q "$st/vendored"
