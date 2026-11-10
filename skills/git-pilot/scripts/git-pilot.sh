@@ -7,7 +7,7 @@
 #  this script never calls a model. stdout is data, stderr is diagnostics.
 # ==============================================================================
 
-set -eo pipefail
+set -euo pipefail
 
 VERSION="2.0.1"
 
