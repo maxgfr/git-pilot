@@ -389,20 +389,37 @@ take_whole_side() {
 # Print one line per staged file that looks like a secret or is too large.
 staged_findings() {
     local max_size="$MAX_FILE_SIZE"
-    local file base size
+    local paths=() blobs=() sizes=() meta file size i
 
-    while IFS= read -r -d '' file; do
-        base=$(basename "$file")
-        case "$base" in
-            .env.example|.env.sample|.env.template|.env.dist) ;;
-            .env|.env.*|*.pem|*.key|*.p12|*.pfx|*.keystore|*.jks|id_rsa|id_dsa|id_ecdsa|id_ed25519|.netrc|.pgpass|.htpasswd)
-                printf '%s\n' "secret-file: $file" ;;
-        esac
-        size=$(git cat-file -s ":$file" 2>/dev/null || echo 0)
-        if [ "$size" -gt "$max_size" ]; then
-            printf '%s\n' "large-file: $file ($size bytes)"
-        fi
-    done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+    # Staged paths and their blob ids from one "git diff --raw" (records are
+    # ":modes <old blob> <new blob> <status>" NUL path NUL), then every size from
+    # one "git cat-file": two processes in all instead of two per file.
+    while IFS= read -r -d '' meta && IFS= read -r -d '' file; do
+        meta=${meta% *}
+        blobs+=("${meta##* }")
+        paths+=("$file")
+    done < <(git diff --cached --raw -z --no-abbrev --no-renames --diff-filter=ACM)
+
+    if [ "${#paths[@]}" -gt 0 ]; then
+        while IFS= read -r size; do
+            sizes+=("$size")
+        done < <(printf '%s\n' "${blobs[@]}" | git cat-file --batch-check='%(objectsize)' 2>/dev/null)
+
+        for i in "${!paths[@]}"; do
+            file=${paths[$i]}
+            case "${file##*/}" in
+                .env.example|.env.sample|.env.template|.env.dist) ;;
+                .env|.env.*|*.pem|*.key|*.p12|*.pfx|*.keystore|*.jks|id_rsa|id_dsa|id_ecdsa|id_ed25519|.netrc|.pgpass|.htpasswd)
+                    printf '%s\n' "secret-file: $file" ;;
+            esac
+            # Not a number: an object git does not have, such as a submodule commit.
+            size=${sizes[$i]:-0}
+            case "$size" in *[!0-9]*) size=0 ;; esac
+            if [ "$size" -gt "$max_size" ]; then
+                printf '%s\n' "large-file: $file ($size bytes)"
+            fi
+        done
+    fi
 
     # Token-like strings in added lines: "path<TAB>line", match with grep -E, report unique paths.
     # "AKIA" and "sk-" must start a word: "sk-" also ends ordinary ones (mask-, risk-, task-).

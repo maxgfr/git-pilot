@@ -494,6 +494,10 @@ git -C "$guard" config diff.noprefix true
 run "$guard" commit-context
 assert_contains "flagged paths survive diff.noprefix" "$OUT" "secret-content: notes.txt"
 
+git -C "$guard" mv .env .env.production
+run "$guard" commit-context
+assert_contains "a renamed secret file is flagged under its new name" "$OUT" "secret-file: .env.production"
+
 # --- conventions -------------------------------------------------------------
 
 conv=$(new_repo conventions)
