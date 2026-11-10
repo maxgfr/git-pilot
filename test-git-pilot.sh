@@ -251,6 +251,93 @@ assert_eq "push succeeds after rebase" "$RC" "0"
 run "$local_clone" rebase continue
 assert_eq "rebase continue without a rebase exits 1" "$RC" "1"
 
+# --- status ------------------------------------------------------------------
+
+st=$(new_repo status)
+printf '%s\n' "one" "two" > "$st/tracked.txt"
+git -C "$st" add tracked.txt
+git -C "$st" commit -q -m "feat: tracked file"
+printf '%s\n' "three" >> "$st/tracked.txt"
+printf '%s\n' "staged" > "$st/staged.txt"
+git -C "$st" add staged.txt
+printf '%s\n' "new" > "$st/untracked.txt"
+run "$st" status
+assert_eq "status succeeds" "$RC" "0"
+assert_contains "status shows staged files with counts" "$OUT" "A +1 -0 staged.txt"
+assert_contains "status shows unstaged files with counts" "$OUT" "M +1 -0 tracked.txt"
+assert_contains "status shows untracked files with sizes" "$OUT" "4 untracked.txt"
+
+# --- staging guard -----------------------------------------------------------
+
+guard=$(new_repo guard)
+printf 'TOKEN=%s\n' "x" > "$guard/.env"
+git -C "$guard" add .env
+run "$guard" commit-context
+assert_eq "commit-context still succeeds with flagged files" "$RC" "0"
+assert_contains "commit-context flags secret files" "$OUT" "secret-file: .env"
+run "$guard" commit -m "chore: add env"
+assert_eq "commit refuses flagged files (exit 5)" "$RC" "5"
+assert_eq "refused commit leaves HEAD unchanged" "$(git -C "$guard" log --format=%s -1)" "chore: initialize fixture"
+run "$guard" commit -m "chore: add env" --allow-flagged
+assert_eq "commit --allow-flagged proceeds" "$RC" "0"
+
+printf 'aws_key = "AKIA%s"\n' "ABCDEFGHIJKLMNOP" > "$guard/config.py"
+git -C "$guard" add config.py
+run "$guard" commit-context
+assert_contains "commit-context flags token-like content" "$OUT" "secret-content: config.py"
+git -C "$guard" reset -q config.py
+
+printf '%s\n' "API_KEY=" > "$guard/.env.example"
+git -C "$guard" add .env.example
+run "$guard" commit-context
+assert_not_contains "example env files are not flagged" "$OUT" "Warnings"
+git -C "$guard" reset -q .env.example
+
+head -c 2048 /dev/zero > "$guard/blob.bin"
+git -C "$guard" add blob.bin
+OUT=$(cd "$guard" && GIT_PILOT_MAX_FILE_SIZE=1024 "$GIT_PILOT" commit-context 2>/dev/null)
+assert_contains "commit-context flags large files" "$OUT" "large-file: blob.bin (2048 bytes)"
+
+# --- conventions -------------------------------------------------------------
+
+conv=$(new_repo conventions)
+printf '{}\n' > "$conv/.releaserc"
+git -C "$conv" add .releaserc
+git -C "$conv" commit -q -m "feat(cli): add releaserc"
+git -C "$conv" commit -q --allow-empty -m "fix(cli): handle empty input"
+git -C "$conv" commit -q --allow-empty -m "Update readme"
+printf '%s\n' "x" > "$conv/x.txt"
+git -C "$conv" add x.txt
+run "$conv" commit-context
+assert_contains "conventions detect semantic-release" "$OUT" "semantic-release (.releaserc)"
+assert_contains "conventions count conventional subjects" "$OUT" "Conventional Commits: 3/4 recent subjects"
+assert_contains "conventions list scopes" "$OUT" "Scopes used: cli (2)"
+assert_contains "conventions count emoji subjects" "$OUT" "Leading emoji: 0/4"
+
+# --- branch-context ----------------------------------------------------------
+
+bc=$(new_repo branch)
+git -C "$bc" checkout -q -b feature
+printf '%s\n' "feature" > "$bc/feature.txt"
+git -C "$bc" add feature.txt
+git -C "$bc" commit -q -m "feat: add feature file" -m "Explain why the feature exists."
+mkdir -p "$bc/.github"
+printf '%s\n' "## Summary" "## Testing" > "$bc/.github/pull_request_template.md"
+git -C "$bc" add .github
+git -C "$bc" commit -q -m "docs: add pull request template"
+run "$bc" branch-context
+assert_eq "branch-context succeeds" "$RC" "0"
+assert_contains "branch-context detects the base" "$OUT" "Base: main"
+assert_contains "branch-context lists commits" "$OUT" "feat: add feature file"
+assert_contains "branch-context includes commit bodies" "$OUT" "Explain why the feature exists."
+assert_contains "branch-context includes the PR template" "$OUT" "Pull request template (.github/pull_request_template.md)"
+assert_contains "branch-context prints the diff" "$OUT" "+feature"
+assert_contains "branch-context warns without upstream" "$ERR" "no upstream"
+run "$bc" branch-context --base feature
+assert_eq "branch-context with no commits exits 1" "$RC" "1"
+run "$bc" branch-context --base nope
+assert_eq "branch-context with an unknown base exits 1" "$RC" "1"
+
 # --- Skill packaging ---------------------------------------------------------
 
 skill_md="$SKILL_DIR/SKILL.md"

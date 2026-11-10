@@ -16,6 +16,7 @@ EXIT_ERROR=1
 EXIT_CONFLICTS=2
 EXIT_REBASE_STOPPED=3
 EXIT_PUSH_REJECTED=4
+EXIT_FLAGGED=5
 
 # --- Colors (stderr only) ---
 if [ -t 2 ]; then
@@ -60,10 +61,15 @@ git-pilot — deterministic Git helpers for the git-pilot agent skill
 Usage: git-pilot.sh <command> [options]
 
 Commit:
-  commit-context [-a]                 Print staged files, recent subjects and the staged diff
-                                      (-a stages all changes first)
-  commit (-F <file|-> | -m <msg>) [--dry-run] [--push]
+  status                              Staged, unstaged and untracked files with line counts and sizes
+  commit-context [-a]                 Print staged files, warnings, conventions, recent subjects
+                                      and the staged diff (-a stages all changes first)
+  commit (-F <file|-> | -m <msg>) [--dry-run] [--push] [--allow-flagged]
                                       Commit the staged changes with the given message
+
+Pull request:
+  branch-context [--base <ref>]       Print the branch's commits, diff stat and diff against its base
+                                      (default: origin/HEAD, then main or master)
 
 Conflicts:
   conflicts                           List files with unresolved conflicts
@@ -83,7 +89,12 @@ Other:
 
 Exit codes:
   0 success, 1 error, 2 conflict markers or unmerged files present,
-  3 rebase stopped on conflicts, 4 push rejected (run 'rebase start' first)
+  3 rebase stopped on conflicts, 4 push rejected (run 'rebase start' first),
+  5 staged files flagged as secrets or large files (see 'commit-context')
+
+Environment:
+  GIT_PILOT_DIFF_BUDGET               Max diff characters printed (default 16000)
+  GIT_PILOT_MAX_FILE_SIZE             Staged file size flagged as large, in bytes (default 5242880)
 EOF
 }
 
@@ -139,8 +150,10 @@ get_diff_budget() {
     echo "${GIT_PILOT_DIFF_BUDGET:-16000}"
 }
 
+# Usage: truncate_diff <diff> <stat shown when the diff is truncated>
 truncate_diff() {
     local diff="$1"
+    local stat="$2"
     local budget
     budget=$(get_diff_budget)
     local length=${#diff}
@@ -152,9 +165,10 @@ truncate_diff() {
     fi
 
     # Smart truncation: stat overview + fit as many complete file diffs as possible
-    local stat
-    stat=$(git diff --cached --stat)
-    local header="Changes overview:"$'\n'"${stat}"$'\n\n'"File diffs (most relevant):"$'\n'
+    local header="File diffs (most relevant):"$'\n'
+    if [ -n "$stat" ]; then
+        header="Changes overview:"$'\n'"${stat}"$'\n\n'"${header}"
+    fi
     local footer=$'\n\n'"[... ${length} chars total, truncated to fit budget]"
     local available=$((budget - ${#header} - ${#footer}))
 
@@ -336,6 +350,102 @@ resolve_keep_theirs() {
     '
 }
 
+
+# ==============================================================================
+#  Staging guard and conventions
+# ==============================================================================
+
+# Print one line per staged file that looks like a secret or is too large.
+staged_findings() {
+    local max_size="${GIT_PILOT_MAX_FILE_SIZE:-5242880}"
+    local file base size
+
+    while IFS= read -r -d '' file; do
+        base=$(basename "$file")
+        case "$base" in
+            .env.example|.env.sample|.env.template|.env.dist) ;;
+            .env|.env.*|*.pem|*.key|*.p12|*.pfx|*.keystore|*.jks|id_rsa|id_dsa|id_ecdsa|id_ed25519|.netrc|.pgpass|.htpasswd)
+                printf '%s\n' "secret-file: $file" ;;
+        esac
+        size=$(git cat-file -s ":$file" 2>/dev/null || echo 0)
+        if [ "$size" -gt "$max_size" ]; then
+            printf '%s\n' "large-file: $file ($size bytes)"
+        fi
+    done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+    # Token-like strings in added lines: "path<TAB>line", match with grep -E, report unique paths
+    local token_pattern='AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}|xox[abprs]-[A-Za-z0-9-]{10}|sk-[A-Za-z0-9_-]{32}|AIza[0-9A-Za-z_-]{35}'
+    git diff --cached -U0 --no-color --no-ext-diff --diff-filter=ACMR 2>/dev/null |
+        awk '/^\+\+\+ / { file = substr($0, 7); next } /^\+/ { print file "\t" substr($0, 2) }' |
+        { grep -E "$token_pattern" || true; } |
+        cut -f1 | awk '!seen[$0]++ { print "secret-content: " $0 }'
+}
+
+# Print a "Conventions:" section describing the repository's commit style.
+detect_conventions() {
+    local tooling=() f
+    for f in commitlint.config.js commitlint.config.cjs commitlint.config.mjs commitlint.config.ts \
+             .commitlintrc .commitlintrc.json .commitlintrc.yml .commitlintrc.yaml .commitlintrc.js; do
+        [ -f "$f" ] && tooling+=("commitlint ($f)")
+    done
+    for f in .releaserc .releaserc.json .releaserc.yml .releaserc.yaml .releaserc.js release.config.js release.config.cjs; do
+        [ -f "$f" ] && tooling+=("semantic-release ($f)")
+    done
+    [ -f .czrc ] && tooling+=("commitizen (.czrc)")
+    [ -f .husky/commit-msg ] && tooling+=("commit-msg hook (.husky/commit-msg)")
+    if [ -f package.json ]; then
+        grep -q '"commitlint"' package.json && tooling+=("commitlint (package.json)")
+        grep -q '"release"[[:space:]]*:' package.json && tooling+=("semantic-release (package.json)")
+        grep -q '"commitizen"' package.json && tooling+=("commitizen (package.json)")
+    fi
+
+    local subjects total conventional emoji types scopes
+    subjects=$(git log --no-merges --format='%s' -50 2>/dev/null || true)
+    total=$(printf '%s' "$subjects" | grep -c '' || true)
+
+    printf '%s\n' "Conventions:"
+    if [ "${#tooling[@]}" -gt 0 ]; then
+        printf '  Tooling: %s\n' "$(printf '%s, ' "${tooling[@]}" | sed 's/, $//')"
+    else
+        printf '  Tooling: none detected\n'
+    fi
+
+    local template
+    template=$(git config --get commit.template 2>/dev/null || true)
+    if [ -n "$template" ]; then
+        printf '  Commit template: %s\n' "$template"
+    fi
+
+    if [ "$total" -gt 0 ]; then
+        conventional=$(printf '%s\n' "$subjects" | grep -cE '^[a-z]+(\([^)]*\))?!?: ' || true)
+        emoji=$(printf '%s\n' "$subjects" | LC_ALL=C grep -cE '^([^ -~]|:[a-z0-9_+-]+:)' || true)
+        printf '  Conventional Commits: %s/%s recent subjects\n' "$conventional" "$total"
+        printf '  Leading emoji: %s/%s recent subjects\n' "$emoji" "$total"
+        types=$(printf '%s\n' "$subjects" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?: .*/\1/p' | sort | uniq -c | sort -rn | head -6 | awk '{ printf "%s%s (%s)", sep, $2, $1; sep = ", " }')
+        [ -n "$types" ] && printf '  Types used: %s\n' "$types"
+        scopes=$(printf '%s\n' "$subjects" | sed -nE 's/^[a-z]+\(([^)]+)\)!?: .*/\1/p' | sort | uniq -c | sort -rn | head -6 | awk '{ printf "%s%s (%s)", sep, $2, $1; sep = ", " }')
+        [ -n "$scopes" ] && printf '  Scopes used: %s\n' "$scopes"
+    fi
+    return 0
+}
+
+# Resolve the default base ref for branch-context.
+default_base() {
+    local ref
+    ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    if [ -n "$ref" ]; then
+        printf '%s\n' "$ref"
+        return 0
+    fi
+    for ref in origin/main origin/master main master; do
+        if git rev-parse --verify --quiet "$ref^{commit}" >/dev/null; then
+            printf '%s\n' "$ref"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ==============================================================================
 #  Commands
 # ==============================================================================
@@ -363,13 +473,131 @@ cmd_commit_context() {
     printf '%s\n' "Branch: $(git branch --show-current 2>/dev/null || true)"
     printf '\n%s\n' "Staged files:"
     git diff --cached --name-status
+
+    local findings
+    findings=$(staged_findings)
+    if [ -n "$findings" ]; then
+        printf '\n%s\n' "Warnings (confirm with the user before committing):"
+        printf '%s\n' "$findings" | sed 's/^/  /'
+        log_warn "Some staged files look like secrets or large files; 'commit' refuses them without --allow-flagged."
+    fi
+
+    printf '\n'
+    detect_conventions
     local recent
     recent=$(git log --format='%s' -10 2>/dev/null || true)
     if [ -n "$recent" ]; then
         printf '\n%s\n%s\n' "Recent commit subjects (match their style):" "$recent"
     fi
     printf '\n%s\n' "Diff:"
-    truncate_diff "$diff"
+    truncate_diff "$diff" "$(git diff --cached --stat)"
+}
+
+# Print "status<TAB>+added<TAB>-deleted<TAB>path" lines for a diff (extra args go to git diff).
+diff_summary() {
+    paste <(git diff --name-status "$@" | cut -f1) <(git diff --numstat "$@") |
+        awk -F'\t' 'NF { printf "  %s +%s -%s %s\n", $1, $2, $3, $4 }'
+}
+
+cmd_status() {
+    [ $# -eq 0 ] || die "status takes no arguments."
+
+    local branch upstream counts
+    branch=$(git branch --show-current 2>/dev/null || true)
+    printf 'Branch: %s\n' "${branch:-detached HEAD}"
+    upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+    if [ -n "$upstream" ]; then
+        counts=$(git rev-list --left-right --count "HEAD...$upstream" 2>/dev/null || printf '0\t0')
+        printf 'Upstream: %s (ahead %s, behind %s)\n' "$upstream" "$(printf '%s' "$counts" | cut -f1)" "$(printf '%s' "$counts" | cut -f2)"
+    fi
+
+    printf '\n%s\n' "Staged (status +added -deleted path):"
+    diff_summary --cached
+
+    printf '\n%s\n' "Unstaged (status +added -deleted path):"
+    diff_summary
+
+    printf '\n%s\n' "Untracked (bytes path):"
+    local file
+    while IFS= read -r -d '' file; do
+        printf '  %s %s\n' "$(wc -c < "$file" | xargs)" "$file"
+    done < <(git ls-files --others --exclude-standard -z)
+
+    local conflicts
+    conflicts=$(conflicted_files)
+    if [ -n "$conflicts" ]; then
+        printf '\n%s\n' "Conflicted:"
+        printf '%s\n' "$conflicts" | sed 's/^/  /'
+    fi
+}
+
+cmd_branch_context() {
+    local base=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -b|--base)
+                [ -n "${2:-}" ] || die "Option $1 requires a ref."
+                base="$2"; shift 2 ;;
+            *) die "Unknown option for branch-context: $1" ;;
+        esac
+    done
+
+    if [ -z "$base" ]; then
+        base=$(default_base) || die "Could not find a base branch. Pass --base <ref>."
+    fi
+    git rev-parse --verify --quiet "$base^{commit}" >/dev/null || die "Unknown base ref: $base"
+
+    local merge_base
+    merge_base=$(git merge-base "$base" HEAD 2>/dev/null) || die "No common history between $base and HEAD."
+
+    local commits
+    commits=$(git log --no-merges --reverse --format='- %h %s' "$merge_base..HEAD")
+    [ -n "$commits" ] || die "No commits on this branch since $base."
+
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        log_warn "Uncommitted changes are not part of the branch context."
+    fi
+    if ! git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+        log_warn "The branch has no upstream yet; push it before opening a pull request."
+    fi
+
+    local branch
+    branch=$(git branch --show-current 2>/dev/null || true)
+    printf 'Branch: %s\n' "${branch:-detached HEAD}"
+    printf 'Base: %s (merge base %s)\n' "$base" "$(git rev-parse --short "$merge_base")"
+
+    printf '\n%s\n%s\n' "Commits (oldest first):" "$commits"
+
+    local bodies
+    bodies=$(git log --no-merges --reverse --format='@@git-pilot@@%h %s%n%b' "$merge_base..HEAD" |
+        awk '/^@@git-pilot@@/ { header = substr($0, 14); printed = 0; next }
+             NF { if (!printed) { print header; printed = 1 } print "  " $0 }' | head -80)
+    if [ -n "$bodies" ]; then
+        printf '\n%s\n%s\n' "Commit bodies:" "$bodies"
+    fi
+
+    local template="" f
+    for f in .github/pull_request_template.md .github/PULL_REQUEST_TEMPLATE.md PULL_REQUEST_TEMPLATE.md \
+             docs/pull_request_template.md .gitlab/merge_request_templates/Default.md; do
+        if [ -f "$f" ]; then
+            template="$f"
+            break
+        fi
+    done
+    if [ -n "$template" ]; then
+        printf '\n%s\n' "Pull request template ($template):"
+        cat "$template"
+    fi
+
+    printf '\n'
+    detect_conventions
+
+    local stat diff
+    stat=$(git diff --stat "$merge_base" HEAD)
+    diff=$(git diff "$merge_base" HEAD)
+    printf '\n%s\n%s\n' "Diff stat:" "$stat"
+    printf '\n%s\n' "Diff:"
+    truncate_diff "$diff" ""
 }
 
 cmd_push() {
@@ -383,7 +611,7 @@ cmd_push() {
 }
 
 cmd_commit() {
-    local message_file="" message="" have_message=false dry_run=false push=false
+    local message_file="" message="" have_message=false dry_run=false push=false allow_flagged=false
     while [ $# -gt 0 ]; do
         case "$1" in
             -F|--file)
@@ -394,6 +622,7 @@ cmd_commit() {
                 message="$2"; have_message=true; shift 2 ;;
             -d|--dry-run) dry_run=true; shift ;;
             -P|--push) push=true; shift ;;
+            --allow-flagged) allow_flagged=true; shift ;;
             *) die "Unknown option for commit: $1" ;;
         esac
     done
@@ -412,6 +641,15 @@ cmd_commit() {
     require_no_conflicts
     if git diff --cached --quiet && [ ! -f "$(git_dir)/MERGE_HEAD" ]; then
         die "No staged changes found. Stage your changes first with 'git add'."
+    fi
+
+    local findings
+    findings=$(staged_findings)
+    if [ -n "$findings" ] && [ "$allow_flagged" != true ]; then
+        log_error "Refusing to commit flagged files:"
+        printf '%s\n' "$findings" | sed 's/^/  /' >&2
+        log_warn "Unstage them, or pass --allow-flagged once the user has confirmed they are safe."
+        exit "$EXIT_FLAGGED"
     fi
 
     if [ "$dry_run" = true ]; then
@@ -544,7 +782,9 @@ main() {
     check_git_repo
 
     case "$command" in
+        status)         cmd_status "$@" ;;
         commit-context) cmd_commit_context "$@" ;;
+        branch-context) cmd_branch_context "$@" ;;
         commit)         cmd_commit "$@" ;;
         conflicts)      cmd_conflicts "$@" ;;
         merge-context)  cmd_merge_context "$@" ;;

@@ -10,6 +10,10 @@ git-pilot is an [agent skill](https://skills.sh) plus a small CLI. The agent you
 ## Features
 
 - **AI commit messages**: your agent writes the message from the staged diff and follows the repository's conventions (Conventional Commits, emoji, language, title-only or bullet points).
+- **Convention detection**: reports commitlint, semantic-release, commitizen and commit templates, plus the share of Conventional and emoji subjects and the types and scopes already in use.
+- **Atomic commits**: the agent splits a messy working tree into coherent commits from a compact `status` overview.
+- **Pull request descriptions**: commits, bodies, the PR template and the diff against the base branch, ready for the agent to write the title and body.
+- **Staging guard**: flags staged secrets (`.env`, private keys, token-like strings) and large files; `commit` refuses them until you confirm.
 - **Conflict resolution**: rich merge and rebase context so the agent resolves each hunk while preserving the intent of both sides.
 - **Auto-rebase**: `pull --rebase` loop with stable exit codes for each conflict round.
 - **Blanket strategies**: keep ours, theirs, or both for every hunk in a file.
@@ -53,6 +57,8 @@ Ask your agent in plain language:
 commit my staged changes
 commit everything as a fix, with bullet points, in French
 preview a commit message for this diff (dry run)
+split my changes into logical commits
+write the pull request description for this branch
 resolve the merge conflicts
 pull with rebase and fix the conflicts, then push
 ```
@@ -67,8 +73,10 @@ git-pilot <command> [options]
 
 | Command | Description |
 |---|---|
-| `commit-context [-a]` | Print the branch, staged files, recent commit subjects, and the staged diff. `-a` stages all changes first |
-| `commit -F <file\|-> \| -m <msg> [--dry-run] [--push]` | Commit the staged changes with the given message and print the new SHA |
+| `status` | Staged, unstaged and untracked files with line counts and sizes |
+| `commit-context [-a]` | Print the branch, staged files, warnings, conventions, recent commit subjects, and the staged diff. `-a` stages all changes first |
+| `commit -F <file\|-> \| -m <msg> [--dry-run] [--push] [--allow-flagged]` | Commit the staged changes with the given message and print the new SHA |
+| `branch-context [--base <ref>]` | Print the branch's commits, PR template, conventions, and diff against its base (default: `origin/HEAD`, then `main` or `master`) |
 | `conflicts` | List the files with unresolved conflicts |
 | `merge-context` | Print the merge or rebase context: both sides' commits and diff stats |
 | `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them |
@@ -91,8 +99,14 @@ git-pilot commit -F msg.txt
 | `2` | Conflict markers or unmerged files present |
 | `3` | Rebase stopped on conflicts: resolve them, then run `rebase continue` |
 | `4` | Push rejected: run `rebase start`, then `push` |
+| `5` | Staged files flagged as secrets or large files: unstage them or pass `--allow-flagged` |
 
 During a rebase, "ours" is the upstream and "theirs" is your commit being replayed.
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `GIT_PILOT_DIFF_BUDGET` | `16000` | Max diff characters printed by `commit-context` and `branch-context` |
+| `GIT_PILOT_MAX_FILE_SIZE` | `5242880` | Staged file size (bytes) flagged as large |
 
 ## Migrating from 1.x
 

@@ -1,6 +1,6 @@
 ---
 name: git-pilot
-description: Git autopilot for commits, merge conflicts and rebases. Use when the user asks to commit their changes with a generated message, write a commit message from the staged diff, resolve merge or rebase conflicts, or pull with rebase and fix the conflicts. Bundles a deterministic helper script; you write the messages and resolutions yourself.
+description: Git autopilot for commits, pull requests, merge conflicts and rebases. Use when the user asks to commit their changes with a generated message, split changes into atomic commits, write a pull request title and description, resolve merge or rebase conflicts, or pull with rebase and fix the conflicts. Bundles a deterministic helper script; you write the messages and resolutions yourself.
 ---
 
 # git-pilot
@@ -14,7 +14,8 @@ repository. If `git-pilot` is on `PATH` (Homebrew install), it is the same
 tool. stdout is data for you; stderr is diagnostics.
 
 Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
-`3` rebase stopped on conflicts, `4` push rejected.
+`3` rebase stopped on conflicts, `4` push rejected, `5` staged files flagged as
+secrets or large files.
 
 ## Rules
 
@@ -26,22 +27,31 @@ Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
 - Only stage everything (`-a`) when the user asks for it or nothing is staged
   and they asked to commit "all" their changes.
 - Push only when the user asks.
+- Never commit files flagged as secrets or large files without telling the
+  user what was flagged and getting an explicit go-ahead.
 
 ## Commit
 
 1. `scripts/git-pilot.sh commit-context` (add `-a` to stage all changes first).
    - Exit `1`: nothing is staged. Tell the user, or offer `-a`.
    - Exit `2`: conflicts remain. Go to **Resolve conflicts** first.
-   - Output: branch, staged files, recent commit subjects, and the staged diff
-     (large diffs are truncated; read the files if you need more).
+   - Output: branch, staged files, `Warnings` (flagged files, if any),
+     `Conventions` (tooling, Conventional Commits and emoji usage, types and
+     scopes used), recent commit subjects, and the staged diff (large diffs are
+     truncated; read the files if you need more).
+   - If `Warnings` is present, stop and show it to the user: suggest
+     unstaging (`git restore --staged <file>`) and adding the file to
+     `.gitignore`, or proceed with `commit --allow-flagged` only if they
+     confirm the file is safe.
 2. Write the message:
    - Title: one line, at most 72 characters, imperative mood, no trailing period.
    - Use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`,
      `chore:`, `test:`, `perf:`, `ci:`, `build:`, `style:`, `revert:`) when
-     the recent subjects or the repo's tooling (commitlint, semantic-release,
-     contributing guide) use them, or when the user asks. Honor a type the user
-     imposes (e.g. "commit as fix"). Use `!` or a `BREAKING CHANGE:` footer for
-     breaking changes.
+     the `Conventions` section shows them (tooling such as commitlint or
+     semantic-release, or most recent subjects), or when the user asks. Reuse
+     an existing scope when one fits. Honor a type the user imposes (e.g.
+     "commit as fix"). Use `!` or a `BREAKING CHANGE:` footer for breaking
+     changes. If a commit template is listed, follow it.
    - Default to a title only. Add a body (blank line, then 2–5 one-line `-`
      bullets on what changed and why) when the user asks for details or the
      change is too large for one line.
@@ -58,7 +68,49 @@ Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
    ```
 
    `--dry-run` prints without committing; `--push` pushes afterwards. On
-   success stdout is the new commit SHA.
+   success stdout is the new commit SHA. Exit `5` means flagged files are
+   staged (see step 1).
+
+## Split into atomic commits
+
+When the user asks to commit "in logical commits" or the changes clearly mix
+unrelated work:
+
+1. `scripts/git-pilot.sh status` lists staged, unstaged and untracked files
+   with line counts and sizes. Read the diffs (`git diff`, `git diff --cached`)
+   to understand each change.
+2. Propose a plan to the user: an ordered list of commits, each with its files
+   (or hunks) and a draft message. Keep each commit coherent and, when
+   possible, buildable on its own; put refactors before the features that rely
+   on them.
+3. If something was already staged that does not belong to the first commit,
+   unstage it first (`git restore --staged <file>`).
+4. For each commit: stage only its files (`git add -- <file>...`). For part of
+   a file, write the hunks to a patch and apply it to the index
+   (`git apply --cached <patch>`); never use interactive `git add -p`. Then
+   run **Commit** steps 1–4 (one confirmation for the whole plan is enough if
+   the user approved it).
+5. Finish with `scripts/git-pilot.sh status` and confirm nothing was left out
+   unintentionally.
+
+## Pull request description
+
+1. `scripts/git-pilot.sh branch-context` (add `--base <ref>` when the target
+   branch is not `origin/HEAD`, `main` or `master`). Output: branch, base,
+   commits with bodies, the repository's pull request template if any,
+   `Conventions`, diff stat and diff.
+2. Write:
+   - A title: if the repository squash-merges with Conventional Commits or
+     semantic-release, make it a valid Conventional Commit subject (it becomes
+     the release note); otherwise a short imperative summary.
+   - A body that follows the template when there is one. Otherwise: a short
+     summary of what and why, the notable changes as bullets, breaking changes
+     and migration notes if any, and how it was tested (only what was really
+     run). Reference issues mentioned in commits (`Closes #123`).
+   - No AI attribution, generated-by lines, or session links.
+3. Show it to the user. Create the pull request only if they ask, with their
+   hosting CLI (e.g. `gh pr create --title … --body-file …`), after pushing
+   the branch.
 
 ## Resolve conflicts
 
