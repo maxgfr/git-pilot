@@ -42,7 +42,7 @@ assert_not_contains() {
 run() {
     local dir="$1"
     shift
-    OUT=$(cd "$dir" && "$GIT_PILOT" "$@" 2>"$TEST_DIR/stderr")
+    OUT=$(cd "$dir" && "$GIT_PILOT" "$@" 2>"$TEST_DIR/stderr" </dev/null)
     RC=$?
     ERR=$(cat "$TEST_DIR/stderr")
 }
@@ -63,19 +63,20 @@ new_repo() {
     printf '%s\n' "$dir"
 }
 
-# Repo with a merge in progress that conflicts on conflict.txt.
+# Repo with a merge in progress that conflicts on a file (default: conflict.txt).
 conflicted_repo() {
-    local dir
+    local dir file="${2:-conflict.txt}"
     dir=$(new_repo "$1")
-    printf '%s\n' "line 1" "base" "line 3" > "$dir/conflict.txt"
-    chmod +x "$dir/conflict.txt"
-    git -C "$dir" add conflict.txt
+    mkdir -p "$(dirname "$dir/$file")"
+    printf '%s\n' "line 1" "base" "line 3" > "$dir/$file"
+    chmod +x "$dir/$file"
+    git -C "$dir" add -- "$file"
     git -C "$dir" commit -q -m "feat: add file"
     git -C "$dir" checkout -q -b other
-    printf '%s\n' "line 1" "theirs" "line 3" > "$dir/conflict.txt"
+    printf '%s\n' "line 1" "theirs" "line 3" > "$dir/$file"
     git -C "$dir" commit -q -am "feat: theirs change"
     git -C "$dir" checkout -q main
-    printf '%s\n' "line 1" "ours" "line 3" > "$dir/conflict.txt"
+    printf '%s\n' "line 1" "ours" "line 3" > "$dir/$file"
     git -C "$dir" commit -q -am "feat: ours change"
     git -C "$dir" merge -q other >/dev/null 2>&1 || true
     printf '%s\n' "$dir"
@@ -186,6 +187,15 @@ assert_eq "take both keeps both sides" "$(cat "$c/conflict.txt")" $'line 1\nours
 
 run "$c" take sideways conflict.txt
 assert_eq "take rejects unknown strategies" "$RC" "1"
+
+# File names that awk would read as an assignment, or grep as an option.
+c=$(conflicted_repo assignment "key=value.txt")
+run "$c" take ours "key=value.txt"
+assert_eq "take keeps the content of a file named like an assignment" "$(cat "$c/key=value.txt")" $'line 1\nours\nline 3'
+
+c=$(conflicted_repo dashname "-x.txt")
+run "$c" mark-resolved "-x.txt"
+assert_eq "mark-resolved checks a file named like an option (exit 2)" "$RC" "2"
 
 c=$(conflicted_repo manual)
 printf '%s\n' "line 1" "ours and theirs" "line 3" > "$c/conflict.txt"

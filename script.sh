@@ -129,8 +129,9 @@ conflicted_files() {
     } | awk 'NF && !seen[$0]++'
 }
 
+# The file is read from stdin so its name is never parsed as a grep option.
 file_has_markers() {
-    grep -Eq '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)' "$1"
+    grep -Eq '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)' < "$1"
 }
 
 # Exit with EXIT_CONFLICTS when conflicts remain, listing them on stderr.
@@ -310,12 +311,16 @@ gather_merge_context() {
     printf '%s\n' "$ctx"
 }
 
-# Rewrite a file in place, keeping its mode.
+# Rewrite a file in place, keeping its mode. The file is read from stdin:
+# as an operand, awk would treat a name like "key=value.txt" as an assignment.
 rewrite_with_awk() {
     local file="$1" program="$2"
     local tmp
     tmp=$(mktemp)
-    awk "$program" "$file" > "$tmp"
+    if ! awk "$program" < "$file" > "$tmp"; then
+        rm -f "$tmp"
+        die "Could not rewrite: $file"
+    fi
     cat "$tmp" > "$file"
     rm -f "$tmp"
 }
