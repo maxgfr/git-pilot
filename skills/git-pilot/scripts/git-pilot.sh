@@ -117,6 +117,12 @@ repo_root() {
     git rev-parse --show-toplevel
 }
 
+# git for output that is printed or parsed: no colors and raw, unquoted paths,
+# whatever the user's configuration says.
+git_plain() {
+    git -c color.ui=never -c core.quotePath=false "$@"
+}
+
 rebase_in_progress() {
     local dir
     dir=$(git_dir)
@@ -124,14 +130,14 @@ rebase_in_progress() {
 }
 
 unmerged_files() {
-    git diff --name-only --diff-filter=U 2>/dev/null || true
+    git_plain diff --name-only --diff-filter=U 2>/dev/null || true
 }
 
 # Unmerged files plus tracked files that still contain conflict markers.
 conflicted_files() {
     {
         unmerged_files
-        git grep -Il --full-name -E '^<<<<<<<( |$)' -- ':/' 2>/dev/null || true
+        git_plain grep -Il --full-name -E '^<<<<<<<( |$)' -- ':/' 2>/dev/null || true
     } | awk 'NF && !seen[$0]++'
 }
 
@@ -262,14 +268,14 @@ gather_merge_context() {
 
         # Commits from incoming branch (what's being merged in)
         local incoming_log
-        incoming_log=$(git log --oneline -10 "$merge_head" --not HEAD 2>/dev/null || true)
+        incoming_log=$(git_plain log --oneline -10 "$merge_head" --not HEAD 2>/dev/null || true)
         if [ -n "$incoming_log" ]; then
             ctx+=$'\n'"Incoming commits (theirs):"$'\n'"$incoming_log"$'\n'
         fi
 
         # Commits from current branch (ours)
         local our_log
-        our_log=$(git log --oneline -10 HEAD --not "$merge_head" 2>/dev/null || true)
+        our_log=$(git_plain log --oneline -10 HEAD --not "$merge_head" 2>/dev/null || true)
         if [ -n "$our_log" ]; then
             ctx+=$'\n'"Current branch commits (ours):"$'\n'"$our_log"$'\n'
         fi
@@ -279,12 +285,12 @@ gather_merge_context() {
         merge_base=$(git merge-base HEAD "$merge_head" 2>/dev/null || true)
         if [ -n "$merge_base" ]; then
             local ours_stat
-            ours_stat=$(git diff --stat "$merge_base" HEAD 2>/dev/null || true)
+            ours_stat=$(git_plain diff --stat "$merge_base" HEAD 2>/dev/null || true)
             if [ -n "$ours_stat" ]; then
                 ctx+=$'\n'"Changes on current branch (ours):"$'\n'"$ours_stat"$'\n'
             fi
             local theirs_stat
-            theirs_stat=$(git diff --stat "$merge_base" "$merge_head" 2>/dev/null || true)
+            theirs_stat=$(git_plain diff --stat "$merge_base" "$merge_head" 2>/dev/null || true)
             if [ -n "$theirs_stat" ]; then
                 ctx+=$'\n'"Changes on incoming branch (theirs):"$'\n'"$theirs_stat"$'\n'
             fi
@@ -299,7 +305,7 @@ gather_merge_context() {
 
         if [ -n "$rebase_dir" ]; then
             [ -f "$rebase_dir/head-name" ] && ctx+="Rebasing: $(cat "$rebase_dir/head-name")"$'\n'
-            [ -f "$rebase_dir/onto" ] && ctx+="Onto: $(git log --oneline -1 "$(cat "$rebase_dir/onto")" 2>/dev/null || true)"$'\n'
+            [ -f "$rebase_dir/onto" ] && ctx+="Onto: $(git_plain log --oneline -1 "$(cat "$rebase_dir/onto")" 2>/dev/null || true)"$'\n'
             if [ -f "$rebase_dir/message" ]; then
                 ctx+="Current patch: $(head -3 "$rebase_dir/message")"$'\n'
             fi
@@ -307,7 +313,7 @@ gather_merge_context() {
     else
         # No active merge/rebase — just provide recent history for context
         local recent_log
-        recent_log=$(git log --oneline -10 2>/dev/null || true)
+        recent_log=$(git_plain log --oneline -10 2>/dev/null || true)
         if [ -n "$recent_log" ]; then
             ctx+=$'\n'"Recent commits:"$'\n'"$recent_log"$'\n'
         fi
@@ -399,7 +405,7 @@ staged_findings() {
 
     # Token-like strings in added lines: "path<TAB>line", match with grep -E, report unique paths
     local token_pattern='AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}|xox[abprs]-[A-Za-z0-9-]{10}|sk-[A-Za-z0-9_-]{32}|AIza[0-9A-Za-z_-]{35}'
-    git diff --cached -U0 --no-color --no-ext-diff --diff-filter=ACMR 2>/dev/null |
+    git_plain diff --cached -U0 --no-color --no-ext-diff --diff-filter=ACMR 2>/dev/null |
         awk '/^\+\+\+ / { file = substr($0, 7); next } /^\+/ { print file "\t" substr($0, 2) }' |
         { grep -E "$token_pattern" || true; } |
         cut -f1 | awk '!seen[$0]++ { print "secret-content: " $0 }'
@@ -492,12 +498,12 @@ cmd_commit_context() {
     fi
 
     local diff
-    diff=$(git diff --cached)
+    diff=$(git_plain diff --cached --no-color --no-ext-diff)
     [ -n "$diff" ] || die "No staged changes found. Stage your changes first with 'git add' (or pass -a)."
 
     printf '%s\n' "Branch: $(git branch --show-current 2>/dev/null || true)"
     printf '\n%s\n' "Staged files:"
-    git diff --cached --name-status
+    git_plain diff --cached --name-status
 
     local findings
     findings=$(staged_findings)
@@ -515,12 +521,12 @@ cmd_commit_context() {
         printf '\n%s\n%s\n' "Recent commit subjects (match their style):" "$recent"
     fi
     printf '\n%s\n' "Diff:"
-    truncate_diff "$diff" "$(git diff --cached --stat)"
+    truncate_diff "$diff" "$(git_plain diff --cached --stat)"
 }
 
 # Print "status<TAB>+added<TAB>-deleted<TAB>path" lines for a diff (extra args go to git diff).
 diff_summary() {
-    paste <(git diff --name-status "$@" | cut -f1) <(git diff --numstat "$@") |
+    paste <(git_plain diff --name-status "$@" | cut -f1) <(git_plain diff --numstat "$@") |
         awk -F'\t' 'NF { printf "  %s +%s -%s %s\n", $1, $2, $3, $4 }'
 }
 
@@ -620,8 +626,8 @@ cmd_branch_context() {
     detect_conventions
 
     local stat diff
-    stat=$(git diff --stat "$merge_base" HEAD)
-    diff=$(git diff "$merge_base" HEAD)
+    stat=$(git_plain diff --stat "$merge_base" HEAD)
+    diff=$(git_plain diff --no-color --no-ext-diff "$merge_base" HEAD)
     printf '\n%s\n%s\n' "Diff stat:" "$stat"
     printf '\n%s\n' "Diff:"
     truncate_diff "$diff" ""
