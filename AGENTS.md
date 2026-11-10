@@ -16,11 +16,12 @@ git-pilot ships two things that must stay in sync:
 ## Verification
 
 - Run `bash -n script.sh test-git-pilot.sh` after shell changes.
-- Run `shellcheck script.sh test-git-pilot.sh` before committing.
+- Run `shellcheck script.sh test-git-pilot.sh .version-hook.sh` before committing.
 - Run `bash test-git-pilot.sh`; it drives the public CLI against temporary repositories and checks the skill packaging.
 - Exercise commit, conflict-resolution, and rebase paths when changing Git logic or `SKILL.md`.
 
 ## Release
 
-- Use Conventional Commit subjects. semantic-release publishes from `main`.
+- Use Conventional Commit subjects. semantic-release publishes from `main`, in the `release` job of `.github/workflows/check-program.yml`, once the tests and ShellCheck pass.
+- Actions are pinned to a commit SHA with the version in a comment; update both together.
 - Leave version changes to `.version-hook.sh` and the release workflow; the hook also syncs the bundled skill script.
