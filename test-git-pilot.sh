@@ -20,8 +20,13 @@ git config --global user.email "pilot@example.invalid"
 git config --global init.defaultBranch main
 git config --global pull.rebase true
 
+SECTION="setup"
+FAILURES=()
+
+# Start a group of tests: its name heads the output and tags every failure.
+section() { SECTION="$1"; printf '\n== %s\n' "$1"; }
 pass() { PASS=$((PASS + 1)); printf 'PASS %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$1"; }
+fail() { FAIL=$((FAIL + 1)); FAILURES+=("[$SECTION] $1"); printf 'FAIL [%s] %s\n' "$SECTION" "$1"; }
 
 assert_eq() {
     local name="$1" actual="$2" expected="$3"
@@ -126,7 +131,7 @@ deleted_side_repo() {
     printf '%s\n' "$dir"
 }
 
-# --- Basic interface ---------------------------------------------------------
+section "Basic interface"
 
 run "$TEST_DIR" --version
 assert_contains "version prints to stdout" "$OUT" "git-pilot v"
@@ -159,7 +164,7 @@ run "$repo/.git" status
 assert_eq "inside .git exits 1" "$RC" "1"
 assert_contains "inside .git explains why" "$ERR" "Not inside a work tree"
 
-# --- commit-context ----------------------------------------------------------
+section "commit-context"
 
 run "$repo" commit-context
 assert_eq "no staged changes exits 1" "$RC" "1"
@@ -206,7 +211,7 @@ assert_eq "a tiny diff budget still succeeds" "$RC" "0"
 assert_contains "a tiny diff budget still reports the omission" "$OUT" "omitted"
 assert_not_contains "a tiny diff budget prints no diff lines" "$OUT" "+large line number"
 
-# --- commit ------------------------------------------------------------------
+section "commit"
 
 head_before=$(git -C "$repo" rev-parse HEAD)
 run_stdin "$repo" "feat: add hello file" commit -F - --dry-run
@@ -232,7 +237,7 @@ git -C "$repo" add hello.txt
 run "$repo" commit -F "$TEST_DIR/msg.txt"
 assert_eq "commit -F <file> uses the file" "$(git -C "$repo" log -1 --format=%s)" "file message"
 
-# --- conflicts, merge-context, take, mark-resolved ---------------------------
+section "conflicts, merge-context, take, mark-resolved"
 
 c=$(conflicted_repo merge)
 run "$c" conflicts
@@ -357,7 +362,7 @@ run_stdin "$c" "Merge branch 'other'" commit -F -
 assert_eq "merge commit succeeds after resolution" "$RC" "0"
 assert_eq "merge commit has two parents" "$(git -C "$c" rev-list --parents -1 HEAD | wc -w | xargs)" "3"
 
-# --- cherry-pick and revert conflicts ----------------------------------------
+section "cherry-pick and revert conflicts"
 
 cp=$(conflicted_repo cherry-pick)
 git -C "$cp" merge --abort
@@ -385,7 +390,7 @@ run "$rv" merge-context
 assert_contains "merge-context detects the revert" "$OUT" "Revert in progress"
 assert_contains "merge-context names the reverted commit" "$OUT" "feat: second version"
 
-# --- Conflict markers that are content, not leftovers ------------------------
+section "Conflict markers that are content, not leftovers"
 
 # A committed fixture full of markers must not block unrelated commits.
 fx=$(new_repo fixtures)
@@ -423,7 +428,7 @@ run "$fx" take ours code.txt
 run "$fx" commit -m "Merge branch 'other'"
 assert_eq "a merge that brings in a fixture can be committed" "$RC" "0"
 
-# --- Running from a subdirectory ---------------------------------------------
+section "Running from a subdirectory"
 
 s=$(conflicted_repo subdir "pkg/conflict.txt")
 printf '%s\n' "<<<<<<< HEAD" "x" "=======" "y" ">>>>>>> other" > "$s/root.txt"
@@ -456,7 +461,7 @@ assert_eq "mark-resolved accepts a root-relative path from a subdirectory" "$RC"
 run "$s/pkg" conflicts
 assert_eq "the root-relative path was staged" "$OUT" ""
 
-# --- Output independent of the user's Git configuration ----------------------
+section "Output independent of the user's Git configuration"
 
 u=$(conflicted_repo unicode "café.txt")
 git -C "$u" config color.ui always
@@ -473,7 +478,7 @@ assert_not_contains "commit-context prints no color codes" "$OUT" $'\033'
 run "$u" status
 assert_contains "status prints non-ASCII paths unescaped" "$OUT" "A +1 -0 naïve.txt"
 
-# --- rebase start / continue / abort -----------------------------------------
+section "rebase start / continue / abort"
 
 remote="$TEST_DIR/remote.git"
 git init -q --bare "$remote"
@@ -559,7 +564,7 @@ assert_eq "conflicts refuses arguments" "$RC" "1"
 run "$local_clone" merge-context shared.txt
 assert_eq "merge-context refuses arguments" "$RC" "1"
 
-# --- status ------------------------------------------------------------------
+section "status"
 
 st=$(new_repo status)
 printf '%s\n' "one" "two" > "$st/tracked.txt"
@@ -600,7 +605,7 @@ assert_contains "status lists a nested repository without a size" "$OUT" "  - ve
 assert_contains "status lists a dangling link without a size" "$OUT" "  - dangling"
 assert_contains "status still sizes regular files around them" "$OUT" "  4 untracked.txt"
 
-# --- staging guard -----------------------------------------------------------
+section "staging guard"
 
 guard=$(new_repo guard)
 printf 'TOKEN=%s\n' "x" > "$guard/.env"
@@ -687,7 +692,7 @@ git -C "$guard" mv .env .env.production
 run "$guard" commit-context
 assert_contains "a renamed secret file is flagged under its new name" "$OUT" "secret-file: .env.production"
 
-# --- conventions -------------------------------------------------------------
+section "conventions"
 
 conv=$(new_repo conventions)
 printf '{}\n' > "$conv/.releaserc"
@@ -713,7 +718,7 @@ git -C "$emo" add x.txt
 run "$emo" commit-context
 assert_contains "conventions count only real leading emoji" "$OUT" "Leading emoji: 4/8 recent subjects"
 
-# --- branch-context ----------------------------------------------------------
+section "branch-context"
 
 bc=$(new_repo branch)
 git -C "$bc" checkout -q -b feature
@@ -753,7 +758,7 @@ assert_eq "branch-context with no commits exits 1" "$RC" "1"
 run "$bc" branch-context --base nope
 assert_eq "branch-context with an unknown base exits 1" "$RC" "1"
 
-# --- Release hook ------------------------------------------------------------
+section "Release hook"
 
 hook="$TEST_DIR/hook"
 mkdir -p "$hook/skills/git-pilot/scripts"
@@ -770,7 +775,7 @@ printf '%s\n' "echo no version here" > "$hook/script.sh"
 (cd "$hook" && bash "$SCRIPT_DIR/.version-hook.sh" 9.9.9 >/dev/null 2>&1)
 assert_eq "the version hook fails when there is no VERSION line" "$?" "1"
 
-# --- Skill packaging ---------------------------------------------------------
+section "Skill packaging"
 
 skill_md="$SKILL_DIR/SKILL.md"
 if [ -f "$skill_md" ]; then pass "SKILL.md exists"; else fail "SKILL.md exists"; fi
@@ -796,6 +801,10 @@ else
     pass "no model calls in the CLI or the skill"
 fi
 
+if [ "$FAIL" -gt 0 ]; then
+    printf '\nFailures:\n'
+    printf '  %s\n' "${FAILURES[@]}"
+fi
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 # Not "exit $FAIL": an exit status wraps at 256, so 256 failures would read as success.
 [ "$FAIL" -eq 0 ]
