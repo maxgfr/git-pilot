@@ -433,6 +433,18 @@ assert_contains "status shows staged files with counts" "$OUT" "A +1 -0 staged.t
 assert_contains "status shows unstaged files with counts" "$OUT" "M +1 -0 tracked.txt"
 assert_contains "status shows untracked files with sizes" "$OUT" "4 untracked.txt"
 
+# Untracked entries that are not readable regular files are listed without a size.
+printf '%s\n' "hello" > "$st/my notes.txt"
+git init -q "$st/vendored"
+git -C "$st/vendored" commit -q --allow-empty -m "chore: nested repository"
+ln -s missing-target "$st/dangling"
+run "$st" status
+assert_eq "status succeeds with special untracked entries" "$RC" "0"
+assert_contains "status keeps spaces in untracked paths" "$OUT" "  6 my notes.txt"
+assert_contains "status lists a nested repository without a size" "$OUT" "  - vendored/"
+assert_contains "status lists a dangling link without a size" "$OUT" "  - dangling"
+assert_contains "status still sizes regular files around them" "$OUT" "  4 untracked.txt"
+
 # --- staging guard -----------------------------------------------------------
 
 guard=$(new_repo guard)

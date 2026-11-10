@@ -570,6 +570,38 @@ diff_summary() {
         awk -F'\t' 'NF { printf "  %s +%s -%s %s\n", $1, $2, $3, $4 }'
 }
 
+# Usage: file_sizes <root> <absolute path>...
+# Print "  <bytes> <path relative to root>" for readable regular files, with one wc.
+file_sizes() {
+    local root="$1" size path
+    shift
+    { wc -c "$@" 2>/dev/null || true; } | while read -r size path; do
+        [ "$path" = total ] || printf '  %s %s\n' "$size" "${path#"$root"/}"
+    done
+}
+
+# Print "  <bytes> <path>" for each untracked file, reading sizes in batches of
+# 200 files instead of starting a process per file.
+untracked_summary() {
+    local root file batch=()
+    root=$(repo_root)
+    while IFS= read -r -d '' file; do
+        if [ -f "$root/$file" ] && [ -r "$root/$file" ]; then
+            batch+=("$root/$file")
+            if [ "${#batch[@]}" -ge 200 ]; then
+                file_sizes "$root" "${batch[@]}"
+                batch=()
+            fi
+        else
+            # No size to read: nested repository, dangling link, unreadable file.
+            [ "${#batch[@]}" -eq 0 ] || file_sizes "$root" "${batch[@]}"
+            batch=()
+            printf '  - %s\n' "$file"
+        fi
+    done < <(git ls-files --others --exclude-standard --full-name -z -- ':/')
+    [ "${#batch[@]}" -eq 0 ] || file_sizes "$root" "${batch[@]}"
+}
+
 cmd_status() {
     [ $# -eq 0 ] || die "status takes no arguments."
 
@@ -589,11 +621,7 @@ cmd_status() {
     diff_summary
 
     printf '\n%s\n' "Untracked (bytes path):"
-    local file root
-    root=$(repo_root)
-    while IFS= read -r -d '' file; do
-        printf '  %s %s\n' "$(wc -c < "$root/$file" | xargs)" "$file"
-    done < <(git ls-files --others --exclude-standard --full-name -z -- ':/')
+    untracked_summary
 
     local conflicts
     conflicts=$(conflicted_files)
