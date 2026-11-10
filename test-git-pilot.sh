@@ -82,6 +82,24 @@ conflicted_repo() {
     printf '%s\n' "$dir"
 }
 
+# Repo with a merge in progress that conflicts on blob.bin, a binary file:
+# git leaves our version in the working tree and writes no conflict markers.
+binary_conflicted_repo() {
+    local dir
+    dir=$(new_repo "$1")
+    printf 'base\0\1\2' > "$dir/blob.bin"
+    git -C "$dir" add blob.bin
+    git -C "$dir" commit -q -m "feat: add blob"
+    git -C "$dir" checkout -q -b other
+    printf 'theirs\0\1\2' > "$dir/blob.bin"
+    git -C "$dir" commit -q -am "feat: theirs blob"
+    git -C "$dir" checkout -q main
+    printf 'ours\0\1\2' > "$dir/blob.bin"
+    git -C "$dir" commit -q -am "feat: ours blob"
+    git -C "$dir" merge -q other >/dev/null 2>&1 || true
+    printf '%s\n' "$dir"
+}
+
 # --- Basic interface ---------------------------------------------------------
 
 run "$TEST_DIR" --version
@@ -187,6 +205,40 @@ assert_eq "take both keeps both sides" "$(cat "$c/conflict.txt")" $'line 1\nours
 
 run "$c" take sideways conflict.txt
 assert_eq "take rejects unknown strategies" "$RC" "1"
+
+# Conflicts without markers: binary files, and files deleted on one side.
+c=$(binary_conflicted_repo binary-theirs)
+run "$c" take theirs blob.bin
+assert_eq "take theirs on a binary conflict succeeds" "$RC" "0"
+assert_eq "take theirs stages their binary version" "$(git -C "$c" rev-parse :blob.bin)" "$(git -C "$c" rev-parse other:blob.bin)"
+assert_eq "take theirs writes their binary version" "$(git -C "$c" hash-object blob.bin)" "$(git -C "$c" rev-parse other:blob.bin)"
+
+c=$(binary_conflicted_repo binary-ours)
+run "$c" take ours blob.bin
+assert_eq "take ours keeps our binary version intact" "$(git -C "$c" rev-parse :blob.bin)" "$(git -C "$c" rev-parse HEAD:blob.bin)"
+
+c=$(binary_conflicted_repo binary-both)
+run "$c" take both blob.bin
+assert_eq "take both refuses a conflict without markers" "$RC" "1"
+assert_eq "refused take both leaves the file unmerged" "$(git -C "$c" diff --name-only --diff-filter=U)" "blob.bin"
+
+c=$(new_repo deleted-side)
+printf '%s\n' "base" > "$c/gone.txt"
+git -C "$c" add gone.txt
+git -C "$c" commit -q -m "feat: add file"
+git -C "$c" checkout -q -b other
+git -C "$c" rm -q gone.txt
+git -C "$c" commit -q -m "feat: remove file"
+git -C "$c" checkout -q main
+printf '%s\n' "ours" > "$c/gone.txt"
+git -C "$c" commit -q -am "feat: edit file"
+git -C "$c" merge -q other >/dev/null 2>&1 || true
+run "$c" take theirs gone.txt
+assert_eq "take refuses a side that deleted the file" "$RC" "1"
+assert_contains "take explains the deleted side" "$ERR" "deleted"
+assert_eq "refused take leaves the file unmerged" "$(git -C "$c" diff --name-only --diff-filter=U)" "gone.txt"
+run "$c" take ours gone.txt
+assert_eq "take keeps the surviving side of a deleted file" "$(git -C "$c" rev-parse :gone.txt)" "$(git -C "$c" rev-parse HEAD:gone.txt)"
 
 # File names that awk would read as an assignment, or grep as an option.
 c=$(conflicted_repo assignment "key=value.txt")

@@ -129,6 +129,10 @@ conflicted_files() {
     } | awk 'NF && !seen[$0]++'
 }
 
+is_unmerged() {
+    [ -n "$(git ls-files -u -- "$1" 2>/dev/null)" ]
+}
+
 # The file is read from stdin so its name is never parsed as a grep option.
 file_has_markers() {
     grep -Eq '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)' < "$1"
@@ -355,6 +359,15 @@ resolve_keep_theirs() {
     '
 }
 
+# Resolve an unmerged file that has no conflict markers (binary file, or deleted
+# on one side) by checking out one side's whole version.
+take_whole_side() {
+    local strategy="$1" file="$2"
+    [ "$strategy" != both ] ||
+        die "Cannot keep both sides of $file: it has no conflict markers (binary file, or deleted on one side). Resolve it manually."
+    git checkout "--$strategy" -- "$file" 2>/dev/null ||
+        die "No '$strategy' version of $file: that side deleted it. Use 'git rm' to delete it, or 'mark-resolved' to keep it."
+}
 
 # ==============================================================================
 #  Staging guard and conventions
@@ -697,9 +710,13 @@ cmd_take() {
 
     local file
     for file in "$@"; do
-        [ -f "$file" ] || die "File not found: $file"
-        "resolve_keep_$strategy" "$file"
-        git add -- "$file"
+        if is_unmerged "$file" && { [ ! -f "$file" ] || ! file_has_markers "$file"; }; then
+            take_whole_side "$strategy" "$file"
+        else
+            [ -f "$file" ] || die "File not found: $file"
+            "resolve_keep_$strategy" "$file"
+        fi
+        git add -- "$file" || die "Could not stage: $file"
         log_success "Resolved ($strategy): $file"
     done
 }

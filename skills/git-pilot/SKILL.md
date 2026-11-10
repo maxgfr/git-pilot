@@ -130,7 +130,10 @@ unrelated work:
    `scripts/git-pilot.sh mark-resolved <file>...` (exit `2` means markers
    remain).
 5. If the user wants one blanket strategy instead, use
-   `scripts/git-pilot.sh take <ours|theirs|both> <file>...`.
+   `scripts/git-pilot.sh take <ours|theirs|both> <file>...`. A conflicted
+   file without markers (binary file, or deleted on one side) gets that
+   side's whole version; `both`, or a side that deleted the file, exits `1`:
+   decide with the user, then `git rm` or `mark-resolved`.
 6. Finish: for a merge, commit (see **Commit**, the message can be the
    default `Merge branch '…'`); for a rebase, continue below.
 
