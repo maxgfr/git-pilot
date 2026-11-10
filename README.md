@@ -79,13 +79,13 @@ git-pilot <command> [options]
 | `branch-context [--base <ref>]` | Print the branch's commits, PR template, conventions, and diff against its base (default: `origin/HEAD`, then `main` or `master`) |
 | `conflicts` | List the files with unresolved conflicts |
 | `merge-context` | Print the merge or rebase context: both sides' commits and diff stats |
-| `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them. Binary conflicts take the chosen side's whole file (`ours` or `theirs` only) |
-| `mark-resolved <file>...` | Stage the files after checking that no conflict markers remain |
+| `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them. Binary and delete/modify conflicts take the chosen side as a whole (`ours` or `theirs` only), which deletes the file if that side deleted it. Files that are not in conflict are refused |
+| `mark-resolved <file>...` | Stage the files after checking that no conflict markers remain (a lone `=======` line is reported, not refused) |
 | `rebase start\|continue\|abort` | `git pull --rebase`, continue after resolving conflicts, or abort |
 | `push` | Push the current branch; a branch that was never pushed gets its upstream on the way |
 | `--version`, `--help` | |
 
-Commands work from any directory of the repository. Printed paths are relative to the repository root; paths you pass are relative to the current directory, as with Git.
+Commands work from any directory of the repository. Printed paths are relative to the repository root; `take` and `mark-resolved` accept paths relative to the current directory or to the root.
 
 stdout carries data and stderr carries diagnostics, so the output is easy to pipe:
 

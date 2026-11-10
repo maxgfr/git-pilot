@@ -109,6 +109,23 @@ binary_conflicted_repo() {
     printf '%s\n' "$dir"
 }
 
+# Repo with a merge in progress where "other" deleted gone.txt and main edited it.
+deleted_side_repo() {
+    local dir
+    dir=$(new_repo "$1")
+    printf '%s\n' "base" > "$dir/gone.txt"
+    git -C "$dir" add gone.txt
+    git -C "$dir" commit -q -m "feat: add file"
+    git -C "$dir" checkout -q -b other
+    git -C "$dir" rm -q gone.txt
+    git -C "$dir" commit -q -m "feat: remove file"
+    git -C "$dir" checkout -q main
+    printf '%s\n' "ours" > "$dir/gone.txt"
+    git -C "$dir" commit -q -am "feat: edit file"
+    git -C "$dir" merge -q other >/dev/null 2>&1 || true
+    printf '%s\n' "$dir"
+}
+
 # --- Basic interface ---------------------------------------------------------
 
 run "$TEST_DIR" --version
@@ -275,23 +292,42 @@ run "$c" take both blob.bin
 assert_eq "take both refuses a conflict without markers" "$RC" "1"
 assert_eq "refused take both leaves the file unmerged" "$(git -C "$c" diff --name-only --diff-filter=U)" "blob.bin"
 
-c=$(new_repo deleted-side)
-printf '%s\n' "base" > "$c/gone.txt"
-git -C "$c" add gone.txt
-git -C "$c" commit -q -m "feat: add file"
-git -C "$c" checkout -q -b other
-git -C "$c" rm -q gone.txt
-git -C "$c" commit -q -m "feat: remove file"
-git -C "$c" checkout -q main
-printf '%s\n' "ours" > "$c/gone.txt"
-git -C "$c" commit -q -am "feat: edit file"
-git -C "$c" merge -q other >/dev/null 2>&1 || true
+# Taking the side that deleted a file deletes it; the other side keeps it.
+c=$(deleted_side_repo deleted-theirs)
 run "$c" take theirs gone.txt
-assert_eq "take refuses a side that deleted the file" "$RC" "1"
-assert_contains "take explains the deleted side" "$ERR" "deleted"
-assert_eq "refused take leaves the file unmerged" "$(git -C "$c" diff --name-only --diff-filter=U)" "gone.txt"
+assert_eq "take of the side that deleted the file succeeds" "$RC" "0"
+assert_contains "take says that it deleted the file" "$ERR" "Deleted"
+if [ ! -e "$c/gone.txt" ]; then pass "take deletes the file from the working tree"; else fail "take deletes the file from the working tree"; fi
+assert_eq "take deletes the file from the index" "$(git -C "$c" ls-files gone.txt)" ""
+run "$c" commit -m "Merge branch 'other'"
+assert_eq "the merge can be committed after the deletion" "$RC" "0"
+
+c=$(deleted_side_repo deleted-ours)
 run "$c" take ours gone.txt
 assert_eq "take keeps the surviving side of a deleted file" "$(git -C "$c" rev-parse :gone.txt)" "$(git -C "$c" rev-parse HEAD:gone.txt)"
+
+c=$(deleted_side_repo deleted-both)
+run "$c" take both gone.txt
+assert_eq "take both refuses a file deleted on one side" "$RC" "1"
+assert_eq "refused take both leaves the deleted file unmerged" "$(git -C "$c" diff --name-only --diff-filter=U)" "gone.txt"
+
+# A file that is not in conflict is refused, and nothing is staged.
+c=$(new_repo plain)
+printf '%s\n' "one" > "$c/plain.txt"
+git -C "$c" add plain.txt
+git -C "$c" commit -q -m "feat: add plain file"
+printf '%s\n' "two" >> "$c/plain.txt"
+run "$c" take ours plain.txt
+assert_eq "take refuses a file that is not in conflict" "$RC" "1"
+assert_contains "take says the file is not in conflict" "$ERR" "Not in conflict"
+assert_eq "a refused take stages nothing" "$(git -C "$c" diff --cached --name-only)" ""
+
+# A lone separator is only reported: it is also a heading underline.
+c=$(conflicted_repo separator)
+printf '%s\n' "Title" "=======" "ours and theirs" > "$c/conflict.txt"
+run "$c" mark-resolved conflict.txt
+assert_eq "mark-resolved accepts a lone separator line" "$RC" "0"
+assert_contains "mark-resolved warns about a lone separator line" "$ERR" "'=======' line remains"
 
 # File names that awk would read as an assignment, or grep as an option.
 c=$(conflicted_repo assignment "key=value.txt")
@@ -368,6 +404,18 @@ run "$s/pkg" commit-context
 assert_contains "conventions are detected from a subdirectory" "$OUT" "semantic-release (.releaserc)"
 run "$s/pkg" status
 assert_contains "status lists untracked files outside the current directory" "$OUT" "3 .releaserc"
+
+# Printed paths are relative to the root: they are accepted back from anywhere.
+s=$(conflicted_repo subdir-root-paths "pkg/conflict.txt")
+run "$s/pkg" take ours pkg/conflict.txt
+assert_eq "take accepts a root-relative path from a subdirectory" "$RC" "0"
+assert_eq "take resolved the root-relative path" "$(cat "$s/pkg/conflict.txt")" $'line 1\nours\nline 3'
+s=$(conflicted_repo subdir-root-mark "pkg/conflict.txt")
+printf '%s\n' "line 1" "ours and theirs" "line 3" > "$s/pkg/conflict.txt"
+run "$s/pkg" mark-resolved pkg/conflict.txt
+assert_eq "mark-resolved accepts a root-relative path from a subdirectory" "$RC" "0"
+run "$s/pkg" conflicts
+assert_eq "the root-relative path was staged" "$OUT" ""
 
 # --- Output independent of the user's Git configuration ----------------------
 

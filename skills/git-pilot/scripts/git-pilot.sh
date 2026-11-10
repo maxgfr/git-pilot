@@ -413,14 +413,43 @@ resolve_keep_theirs() {
     '
 }
 
-# Resolve an unmerged file that has no conflict markers (binary file, or deleted
-# on one side) by checking out one side's whole version.
+# Resolve and stage an unmerged file that has no conflict markers (binary file,
+# or deleted on one side) by taking one side's whole version. When that side
+# deleted the file, taking it means deleting the file.
 take_whole_side() {
-    local strategy="$1" file="$2"
+    local strategy="$1" file="$2" stage=2
     [ "$strategy" != both ] ||
         die "Cannot keep both sides of $file: it has no conflict markers (binary file, or deleted on one side). Resolve it manually."
-    git checkout "--$strategy" -- "$file" 2>/dev/null ||
-        die "No '$strategy' version of $file: that side deleted it. Use 'git rm' to delete it, or 'mark-resolved' to keep it."
+    [ "$strategy" = ours ] || stage=3
+
+    # "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>": 2 is ours, 3 is theirs.
+    if git ls-files -u -- "$file" | awk -v stage="$stage" '$3 == stage { found = 1 } END { exit !found }'; then
+        git checkout "--$strategy" -- "$file" || die "Could not check out the '$strategy' version of: $file"
+        git add -- "$file" || die "Could not stage: $file"
+    else
+        git rm -q -- "$file" >&2 || die "Could not remove: $file"
+        log_info "Deleted, as on the '$strategy' side: $file"
+    fi
+}
+
+# Paths are printed relative to the repository root but typed relative to the
+# current directory. Accept both: a path that names nothing from the current
+# directory is looked up from the root.
+resolve_path() {
+    local path="$1" root
+    case "$path" in
+        /*) printf '%s\n' "$path"; return 0 ;;
+    esac
+    if [ -e "$path" ] || [ -L "$path" ] || [ -n "$(git ls-files -- "$path" 2>/dev/null)" ]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    root=$(repo_root)
+    if [ -e "$root/$path" ] || [ -L "$root/$path" ] || [ -n "$(git ls-files -- ":(top)$path" 2>/dev/null)" ]; then
+        printf '%s\n' "$root/$path"
+        return 0
+    fi
+    printf '%s\n' "$path"
 }
 
 # ==============================================================================
@@ -875,35 +904,53 @@ cmd_take() {
     esac
     [ $# -gt 0 ] || die "Usage: take <ours|theirs|both> <file>..."
 
-    local file
-    for file in "$@"; do
+    # Check every file before changing any: a file that is not in conflict
+    # would otherwise be staged as it is and reported as resolved.
+    local args=("$@") files=() arg file i
+    for arg in "$@"; do
+        file=$(resolve_path "$arg")
+        if ! is_unmerged "$file"; then
+            [ -f "$file" ] || die "File not found: $arg"
+            file_has_markers "$file" || die "Not in conflict, nothing to resolve: $arg"
+        fi
+        files+=("$file")
+    done
+
+    for i in "${!files[@]}"; do
+        file=${files[$i]}
         if is_unmerged "$file" && { [ ! -f "$file" ] || ! file_has_markers "$file"; }; then
             take_whole_side "$strategy" "$file"
         else
-            [ -f "$file" ] || die "File not found: $file"
             "resolve_keep_$strategy" "$file"
+            git add -- "$file" || die "Could not stage: ${args[$i]}"
         fi
-        git add -- "$file" || die "Could not stage: $file"
-        log_success "Resolved ($strategy): $file"
+        log_success "Resolved ($strategy): ${args[$i]}"
     done
 }
 
 cmd_mark_resolved() {
     [ $# -gt 0 ] || die "Usage: mark-resolved <file>..."
-    local file failed=false
-    for file in "$@"; do
+    local args=("$@") files=() arg file i failed=false
+    for arg in "$@"; do
+        file=$(resolve_path "$arg")
         # A directory would be staged whole, without its files being checked.
-        [ ! -d "$file" ] || die "mark-resolved takes files, not directories: $file"
-        if [ -f "$file" ] && file_has_markers "$file"; then
-            log_error "Conflict markers remain in: $file"
-            failed=true
+        [ ! -d "$file" ] || die "mark-resolved takes files, not directories: $arg"
+        if [ -f "$file" ]; then
+            if file_has_markers "$file"; then
+                log_error "Conflict markers remain in: $arg"
+                failed=true
+            elif is_unmerged "$file" && grep -Eq '^=======[[:space:]]*$' < "$file"; then
+                # Not refused: such a line is also a Markdown or reStructuredText heading underline.
+                log_warn "A '=======' line remains in $arg: check that it is not a leftover conflict separator."
+            fi
         fi
+        files+=("$file")
     done
     [ "$failed" = false ] || exit "$EXIT_CONFLICTS"
 
-    for file in "$@"; do
-        git add -A -- "$file" || die "Could not stage: $file"
-        log_success "Staged: $file"
+    for i in "${!files[@]}"; do
+        git add -A -- "${files[$i]}" || die "Could not stage: ${args[$i]}"
+        log_success "Staged: ${args[$i]}"
     done
 }
 

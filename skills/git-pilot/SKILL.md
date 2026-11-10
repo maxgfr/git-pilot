@@ -12,8 +12,8 @@ The script is `scripts/git-pilot.sh`, relative to this SKILL.md. Run it with
 `bash <this-skill-dir>/scripts/git-pilot.sh <command>` from inside the user's
 repository. If `git-pilot` is on `PATH` (Homebrew install), it is the same
 tool. stdout is data for you; stderr is diagnostics. Paths in the output are
-relative to the repository root; paths you pass are relative to your current
-directory, as with Git, so prefer running from the root.
+relative to the repository root, and `take` and `mark-resolved` accept them
+back from any directory.
 
 Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
 `3` rebase stopped on conflicts, `4` push rejected because the remote is
@@ -130,12 +130,13 @@ unrelated work:
    - Edit the file with your normal editing tools and remove all markers.
 4. Show the user a short summary of each resolution, then stage it:
    `scripts/git-pilot.sh mark-resolved <file>...` (exit `2` means markers
-   remain).
+   remain; a warning about a `=======` line means: check that it is content
+   and not a leftover separator).
 5. If the user wants one blanket strategy instead, use
    `scripts/git-pilot.sh take <ours|theirs|both> <file>...`. A conflicted
    file without markers (binary file, or deleted on one side) gets that
-   side's whole version; `both`, or a side that deleted the file, exits `1`:
-   decide with the user, then `git rm` or `mark-resolved`.
+   side's whole version, which deletes the file when that side deleted it;
+   `both` exits `1` on such a file. A file that is not in conflict is refused.
 6. Finish: for a merge, commit (see **Commit**, the message can be the
    default `Merge branch '…'`); for a rebase, continue below.
 
