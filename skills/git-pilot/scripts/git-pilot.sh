@@ -424,10 +424,16 @@ staged_findings() {
         fi
     done < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
-    # Token-like strings in added lines: "path<TAB>line", match with grep -E, report unique paths
-    local token_pattern='AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}|xox[abprs]-[A-Za-z0-9-]{10}|sk-[A-Za-z0-9_-]{32}|AIza[0-9A-Za-z_-]{35}'
-    git_plain diff --cached -U0 --no-color --no-ext-diff --diff-filter=ACMR 2>/dev/null |
-        awk '/^\+\+\+ / { file = substr($0, 7); next } /^\+/ { print file "\t" substr($0, 2) }' |
+    # Token-like strings in added lines: "path<TAB>line", match with grep -E, report unique paths.
+    # "AKIA" and "sk-" must start a word: "sk-" also ends ordinary ones (mask-, risk-, task-).
+    local token_pattern='(^|[^A-Za-z0-9])AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}|xox[abprs]-[A-Za-z0-9-]{10}|(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{32}|AIza[0-9A-Za-z_-]{35}'
+    # File headers only count outside hunks (an added "++ x" line reads "+++ x"),
+    # and the prefixes are forced so that diff.noprefix cannot shift the path.
+    git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR 2>/dev/null |
+        awk '/^diff --git / { in_hunk = 0; next }
+             /^@@ / { in_hunk = 1; next }
+             !in_hunk && /^\+\+\+ / { file = substr($0, 7); next }
+             in_hunk && /^\+/ { print file "\t" substr($0, 2) }' |
         { grep -E "$token_pattern" || true; } |
         cut -f1 | awk '!seen[$0]++ { print "secret-content: " $0 }'
 }

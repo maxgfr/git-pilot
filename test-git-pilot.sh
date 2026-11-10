@@ -448,6 +448,31 @@ run_env "$guard" GIT_PILOT_MAX_FILE_SIZE=1k commit -m "chore: add blob" --dry-ru
 assert_eq "an invalid size limit exits 1" "$RC" "1"
 assert_contains "an invalid size limit is named" "$ERR" "GIT_PILOT_MAX_FILE_SIZE must be"
 
+# Token patterns need a boundary: "sk-" also ends ordinary words (mask-, risk-, task-).
+git -C "$guard" reset -q blob.bin
+printf '%s\n' ".mask-image-linear-gradient-to-bottom-from-black-to-transparent { }" > "$guard/style.css"
+printf '%s\n' "see risk-management-and-compliance-framework-overview-2024" >> "$guard/style.css"
+git -C "$guard" add style.css
+run "$guard" commit-context
+assert_not_contains "kebab-case words are not flagged as API keys" "$OUT" "secret-content"
+git -C "$guard" reset -q style.css
+
+printf 'api_key = "sk-%s"\n' "abcdefghijklmnopqrstuvwxyz0123456789" > "$guard/keys.txt"
+git -C "$guard" add keys.txt
+run "$guard" commit-context
+assert_contains "API keys are still flagged" "$OUT" "secret-content: keys.txt"
+git -C "$guard" reset -q keys.txt
+
+# An added line that starts with "++ " looks like a "+++ " file header in the diff.
+printf '%s\n' "++ counter" > "$guard/notes.txt"
+printf 'token = "AKIA%s"\n' "ABCDEFGHIJKLMNOP" >> "$guard/notes.txt"
+git -C "$guard" add notes.txt
+run "$guard" commit-context
+assert_contains "flagged content is attributed to the right file" "$OUT" "secret-content: notes.txt"
+git -C "$guard" config diff.noprefix true
+run "$guard" commit-context
+assert_contains "flagged paths survive diff.noprefix" "$OUT" "secret-content: notes.txt"
+
 # --- conventions -------------------------------------------------------------
 
 conv=$(new_repo conventions)
