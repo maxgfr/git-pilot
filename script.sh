@@ -600,10 +600,14 @@ cmd_branch_context() {
 
     printf '\n%s\n%s\n' "Commits (oldest first):" "$commits"
 
+    # awk caps the output itself and reads git's output to the end: piping into
+    # head would kill the pipeline (SIGPIPE under pipefail) on long bodies.
     local bodies
     bodies=$(git log --no-merges --reverse --format='@@git-pilot@@%h %s%n%b' "$merge_base..HEAD" |
-        awk '/^@@git-pilot@@/ { header = substr($0, 14); printed = 0; next }
-             NF { if (!printed) { print header; printed = 1 } print "  " $0 }' | head -80)
+        awk 'function emit(line) { if (count++ < 80) print line }
+             /^@@git-pilot@@/ { header = substr($0, 14); printed = 0; next }
+             NF { if (!printed) { emit(header); printed = 1 } emit("  " $0) }
+             END { if (count > 80) print "[... " count - 80 " more lines of commit bodies omitted]" }')
     if [ -n "$bodies" ]; then
         printf '\n%s\n%s\n' "Commit bodies:" "$bodies"
     fi
