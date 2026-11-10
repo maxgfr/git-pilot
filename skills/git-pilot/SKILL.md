@@ -16,8 +16,8 @@ relative to the repository root; paths you pass are relative to your current
 directory, as with Git, so prefer running from the root.
 
 Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
-`3` rebase stopped on conflicts, `4` push rejected, `5` staged files flagged as
-secrets or large files.
+`3` rebase stopped on conflicts, `4` push rejected because the remote is
+ahead, `5` staged files flagged as secrets or large files.
 
 ## Rules
 
@@ -151,4 +151,6 @@ unrelated work:
 2. If the user gives up or a resolution is not safe,
    `scripts/git-pilot.sh rebase abort` restores the previous state.
 3. To push after a rejected push (exit `4`): `rebase start`, resolve, then
-   `scripts/git-pilot.sh push`.
+   `scripts/git-pilot.sh push`. `push` sets the upstream of a branch that was
+   never pushed. Exit `1` from `push` is any other failure (authentication,
+   network, protected branch): report git's message, a rebase will not help.

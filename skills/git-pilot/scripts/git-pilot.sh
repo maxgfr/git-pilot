@@ -81,7 +81,7 @@ Sync:
   rebase start                        git pull --rebase
   rebase continue                     Continue the rebase after conflicts are resolved
   rebase abort                        Abort the rebase in progress
-  push                                git push
+  push                                Push the current branch (sets its upstream on the first push)
 
 Other:
   -v, --version                       Show version
@@ -89,7 +89,7 @@ Other:
 
 Exit codes:
   0 success, 1 error, 2 conflict markers or unmerged files present,
-  3 rebase stopped on conflicts, 4 push rejected (run 'rebase start' first),
+  3 rebase stopped on conflicts, 4 push rejected because the remote is ahead (run 'rebase start' first),
   5 staged files flagged as secrets or large files (see 'commit-context')
 
 Environment:
@@ -743,15 +743,54 @@ cmd_branch_context() {
     truncate_diff "$diff" ""
 }
 
+# Remote that a branch without upstream is pushed to: remote.pushDefault, else
+# "origin", else the only remote. Fails when there is no obvious choice.
+default_push_remote() {
+    local remote
+    remote=$(git config --get remote.pushDefault 2>/dev/null || true)
+    if [ -z "$remote" ]; then
+        if git config --get remote.origin.url >/dev/null 2>&1; then
+            remote=origin
+        else
+            remote=$(git remote 2>/dev/null || true)
+            case "$remote" in
+                ''|*$'\n'*) return 1 ;;
+            esac
+        fi
+    fi
+    printf '%s\n' "$remote"
+}
+
 cmd_push() {
-    [ $# -eq 0 ] || die "push takes no arguments: it runs a plain 'git push' of the current branch."
+    [ $# -eq 0 ] || die "push takes no arguments: it pushes the current branch to its upstream."
+
+    # A branch that was never pushed gets its upstream on the way.
+    local args=() branch remote
+    if ! git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+        branch=$(git branch --show-current 2>/dev/null || true)
+        [ -n "$branch" ] || die "Cannot push a detached HEAD: check out a branch first."
+        remote=$(default_push_remote) ||
+            die "The branch has no upstream and there is no single remote to choose. Run 'git push -u <remote> $branch' once."
+        args=(-u "$remote" "$branch")
+        log_info "No upstream yet: pushing to $remote and tracking $remote/$branch."
+    fi
+
     log_info "Pushing..."
-    if git push >&2; then
+    if git push ${args[@]+"${args[@]}"} >&2; then
         log_success "Pushed!"
         return 0
     fi
-    log_error "Push failed or was rejected. If the remote has new commits, run 'rebase start', then 'push' again."
-    exit "$EXIT_PUSH_REJECTED"
+
+    # Ask the remote again without sending anything: only a branch that is
+    # behind its remote is worth a rebase. Anything else (authentication,
+    # network, a hook or a protected branch refusing the push) is a plain error.
+    local verdict
+    verdict=$(git push --dry-run --porcelain ${args[@]+"${args[@]}"} 2>/dev/null || true)
+    if printf '%s\n' "$verdict" | grep -Eq '^!.*\[rejected\] \((fetch first|non-fast-forward)\)'; then
+        log_error "Push rejected: the remote has commits you do not have. Run 'rebase start', then 'push' again."
+        exit "$EXIT_PUSH_REJECTED"
+    fi
+    die "git push failed for another reason than new commits on the remote (see git's message above)."
 }
 
 cmd_commit() {

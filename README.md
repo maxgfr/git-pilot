@@ -82,7 +82,7 @@ git-pilot <command> [options]
 | `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them. Binary conflicts take the chosen side's whole file (`ours` or `theirs` only) |
 | `mark-resolved <file>...` | Stage the files after checking that no conflict markers remain |
 | `rebase start\|continue\|abort` | `git pull --rebase`, continue after resolving conflicts, or abort |
-| `push` | `git push` |
+| `push` | Push the current branch; a branch that was never pushed gets its upstream on the way |
 | `--version`, `--help` | |
 
 Commands work from any directory of the repository. Printed paths are relative to the repository root; paths you pass are relative to the current directory, as with Git.
@@ -100,7 +100,7 @@ git-pilot commit -F msg.txt
 | `1` | Error (not a repository, nothing staged, bad usage...) |
 | `2` | Conflict markers or unmerged files present |
 | `3` | Rebase stopped on conflicts: resolve them, then run `rebase continue` |
-| `4` | Push rejected: run `rebase start`, then `push` |
+| `4` | Push rejected because the remote has new commits: run `rebase start`, then `push`. Any other push failure exits `1` |
 | `5` | Staged files flagged as secrets or large files: unstage them or pass `--allow-flagged` |
 
 During a rebase, "ours" is the upstream and "theirs" is your commit being replayed.

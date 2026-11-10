@@ -442,6 +442,23 @@ assert_eq "push succeeds after rebase" "$RC" "0"
 run "$local_clone" rebase continue
 assert_eq "rebase continue without a rebase exits 1" "$RC" "1"
 
+# A first push sets the upstream; exit 4 is kept for a remote that is ahead.
+git -C "$local_clone" checkout -q -b topic
+git -C "$local_clone" commit -q --allow-empty -m "feat: start topic"
+run "$local_clone" push
+assert_eq "push of a new branch succeeds" "$RC" "0"
+assert_eq "push of a new branch sets its upstream" "$(git -C "$local_clone" rev-parse --abbrev-ref 'topic@{upstream}')" "origin/topic"
+git -C "$local_clone" checkout -q main
+
+run "$repo" push
+assert_eq "push without any remote exits 1, not 4" "$RC" "1"
+git -C "$local_clone" remote set-url --push origin "$TEST_DIR/no-such-remote.git"
+git -C "$local_clone" commit -q --allow-empty -m "feat: unreachable"
+run "$local_clone" push
+assert_eq "push to an unreachable remote exits 1, not 4" "$RC" "1"
+git -C "$local_clone" remote set-url --push origin "$remote"
+git -C "$local_clone" reset -q --hard HEAD~1
+
 # Arguments that would be ignored are refused instead.
 printf '%s\n' "a" "second local edit" "c" > "$local_clone/shared.txt"
 git -C "$local_clone" commit -q -am "feat: second local edit"
