@@ -105,7 +105,10 @@ EOF
 
 check_git_repo() {
     command -v git >/dev/null 2>&1 || die "git is not installed."
-    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not inside a git repository."
+    # rev-parse succeeds inside .git and in bare repositories too: it prints "false".
+    local inside
+    inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) || die "Not inside a git repository."
+    [ "$inside" = true ] || die "Not inside a work tree (bare repository or .git directory)."
 }
 
 git_dir() {

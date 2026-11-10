@@ -127,6 +127,10 @@ repo=$(new_repo basic)
 run "$repo" frobnicate
 assert_eq "unknown command exits 1" "$RC" "1"
 
+run "$repo/.git" status
+assert_eq "inside .git exits 1" "$RC" "1"
+assert_contains "inside .git explains why" "$ERR" "Not inside a work tree"
+
 # --- commit-context ----------------------------------------------------------
 
 run "$repo" commit-context
