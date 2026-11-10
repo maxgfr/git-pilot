@@ -19,7 +19,7 @@ EXIT_PUSH_REJECTED=4
 EXIT_FLAGGED=5
 
 # --- Colors (stderr only) ---
-if [ -t 2 ]; then
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     BLUE='\033[0;34m'
@@ -96,6 +96,7 @@ Environment:
   GIT_PILOT_DIFF_BUDGET               Max diff characters printed (default 16000)
   GIT_PILOT_MAX_FILE_SIZE             Staged file size flagged as large, in bytes (default 5242880)
   Both must be non-negative integers; any other value is an error.
+  NO_COLOR                            Set to disable colors in diagnostics
 EOF
 }
 
