@@ -219,6 +219,15 @@ if [ -x "$c/conflict.txt" ]; then pass "take keeps the file mode"; else fail "ta
 run "$c" conflicts
 assert_eq "take stages the file" "$OUT" ""
 
+# A merge resolved to our side stages nothing, but its commit is still due.
+run "$c" commit-context
+assert_eq "commit-context accepts a merge with nothing staged" "$RC" "0"
+assert_contains "commit-context explains the empty merge diff" "$OUT" "merge in progress resolves to the current branch"
+run "$c" commit -m "Merge branch 'other'"
+assert_eq "commit concludes a merge with nothing staged" "$RC" "0"
+run "$c" commit-context
+assert_eq "commit-context still refuses nothing staged outside a merge" "$RC" "1"
+
 c=$(conflicted_repo theirs)
 run "$c" take theirs conflict.txt
 assert_eq "take theirs keeps their side" "$(cat "$c/conflict.txt")" $'line 1\ntheirs\nline 3'

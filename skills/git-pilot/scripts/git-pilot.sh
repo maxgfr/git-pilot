@@ -530,7 +530,12 @@ cmd_commit_context() {
 
     local diff
     diff=$(git_plain diff --cached --no-color --no-ext-diff)
-    [ -n "$diff" ] || die "No staged changes found. Stage your changes first with 'git add' (or pass -a)."
+    # A merge resolved entirely to our side stages nothing, yet still needs its commit.
+    local merging=false
+    [ ! -f "$(git_dir)/MERGE_HEAD" ] || merging=true
+    if [ -z "$diff" ] && [ "$merging" = false ]; then
+        die "No staged changes found. Stage your changes first with 'git add' (or pass -a)."
+    fi
 
     printf '%s\n' "Branch: $(git branch --show-current 2>/dev/null || true)"
     printf '\n%s\n' "Staged files:"
@@ -552,6 +557,10 @@ cmd_commit_context() {
         printf '\n%s\n%s\n' "Recent commit subjects (match their style):" "$recent"
     fi
     printf '\n%s\n' "Diff:"
+    if [ -z "$diff" ]; then
+        printf '%s\n' "(none: the merge in progress resolves to the current branch's content)"
+        return 0
+    fi
     truncate_diff "$diff" "$(git_plain diff --cached --stat)"
 }
 
