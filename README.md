@@ -13,7 +13,7 @@ git-pilot is an [agent skill](https://skills.sh) plus a small CLI. The agent you
 - **Convention detection**: reports commitlint, semantic-release, commitizen and commit templates, plus the share of Conventional and emoji subjects and the types and scopes already in use.
 - **Atomic commits**: the agent splits a messy working tree into coherent commits from a compact `status` overview.
 - **Pull request descriptions**: commits, bodies, the PR template and the diff against the base branch, ready for the agent to write the title and body.
-- **Staging guard**: flags staged secrets (`.env`, private keys, token-like strings) and large files; `commit` refuses them until you confirm.
+- **Staging guard**: flags staged secrets (`.env`, private keys, and tokens in well-known formats: AWS, GitHub, GitLab, Slack, Stripe, Google, npm, PyPI, Hugging Face, SendGrid, DigitalOcean, OpenAI-style keys) and large files; `commit` refuses them until you confirm. It is a last-minute heuristic, not a replacement for a secret scanner in CI.
 - **Conflict resolution**: rich merge and rebase context so the agent resolves each hunk while preserving the intent of both sides.
 - **Auto-rebase**: `pull --rebase` loop with stable exit codes for each conflict round.
 - **Blanket strategies**: keep ours, theirs, or both for every hunk in a file.

@@ -644,6 +644,28 @@ git -C "$guard" config diff.noprefix true
 run "$guard" commit-context
 assert_contains "flagged paths survive diff.noprefix" "$OUT" "secret-content: notes.txt"
 
+# Other well-known token formats. Each sample is assembled here from pieces, so
+# that this file never contains anything shaped like a real token.
+flagged_sample() {
+    local name="$1" sample="$2"
+    printf 'value = "%s"\n' "$sample" > "$guard/candidate.txt"
+    git -C "$guard" add candidate.txt
+    run "$guard" commit-context
+    assert_contains "$name is flagged" "$OUT" "secret-content: candidate.txt"
+    git -C "$guard" rm -q --cached candidate.txt
+}
+alnum="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+hex="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+flagged_sample "a Stripe live key" "sk_""live_${alnum:0:24}"
+flagged_sample "a GitLab token" "glpat""-${alnum:0:20}"
+flagged_sample "an npm token" "npm""_${alnum:0:36}"
+flagged_sample "a Hugging Face token" "hf""_${alnum:0:34}"
+flagged_sample "a SendGrid key" "SG"".${alnum:0:22}.${alnum:0:43}"
+flagged_sample "a PyPI token" "pypi""-AgEIcHlwaS5vcmc${alnum:0:50}"
+flagged_sample "a DigitalOcean token" "dop""_v1_${hex}"
+flagged_sample "a Slack webhook" "https://hooks.slack"".com/services/T${alnum:0:9}/B${alnum:0:9}/${alnum:0:24}"
+rm "$guard/candidate.txt"
+
 git -C "$guard" mv .env .env.production
 run "$guard" commit-context
 assert_contains "a renamed secret file is flagged under its new name" "$OUT" "secret-file: .env.production"

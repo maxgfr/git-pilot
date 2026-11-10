@@ -507,8 +507,27 @@ staged_findings() {
     fi
 
     # Token-like strings in added lines: "path<TAB>line", match with grep -E, report unique paths.
-    # "AKIA" and "sk-" must start a word: "sk-" also ends ordinary ones (mask-, risk-, task-).
-    local token_pattern='(^|[^A-Za-z0-9])AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}|xox[abprs]-[A-Za-z0-9-]{10}|(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{32}|AIza[0-9A-Za-z_-]{35}'
+    # A heuristic for well-known formats, not a secret scanner. Short prefixes
+    # must start a word: "sk-" also ends ordinary ones (mask-, risk-, task-).
+    local token_patterns=(
+        '(^|[^A-Za-z0-9])AKIA[0-9A-Z]{16}'                                  # AWS access key id
+        '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----'                             # PEM private key
+        'gh[pousr]_[A-Za-z0-9]{36}'                                         # GitHub token
+        'github_pat_[A-Za-z0-9_]{22}'                                       # GitHub fine-grained token
+        'glpat-[A-Za-z0-9_-]{20}'                                           # GitLab personal access token
+        'xox[abprs]-[A-Za-z0-9-]{10}'                                       # Slack token
+        'hooks\.slack\.com/services/T[A-Za-z0-9_]+/B[A-Za-z0-9_]+/[A-Za-z0-9_]{20}'  # Slack webhook
+        '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{32}'                            # OpenAI, Anthropic and similar
+        '(^|[^A-Za-z0-9_])[sr]k_live_[A-Za-z0-9]{24}'                       # Stripe live key
+        'AIza[0-9A-Za-z_-]{35}'                                             # Google API key
+        '(^|[^A-Za-z0-9_])npm_[A-Za-z0-9]{36}'                              # npm token
+        'pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50}'                             # PyPI token
+        '(^|[^A-Za-z0-9_])hf_[A-Za-z0-9]{34}'                               # Hugging Face token
+        '(^|[^A-Za-z0-9_])SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}'         # SendGrid key
+        '(^|[^A-Za-z0-9_])do[pors]_v1_[a-f0-9]{64}'                         # DigitalOcean token
+    )
+    local token_pattern
+    token_pattern=$(IFS='|'; printf '%s' "${token_patterns[*]}")
     # File headers only count outside hunks (an added "++ x" line reads "+++ x"),
     # and the prefixes are forced so that diff.noprefix cannot shift the path.
     git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR 2>/dev/null |
@@ -516,7 +535,7 @@ staged_findings() {
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = substr($0, 7); next }
              in_hunk && /^\+/ { print file "\t" substr($0, 2) }' |
-        { grep -E "$token_pattern" || true; } |
+        { grep -E -e "$token_pattern" || true; } |
         cut -f1 | awk '!seen[$0]++ { print "secret-content: " $0 }'
 }
 
