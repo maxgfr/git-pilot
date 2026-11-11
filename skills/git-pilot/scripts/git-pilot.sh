@@ -871,19 +871,20 @@ gitleaks_findings() {
 # Usage: run_with_timeout <seconds> <command>...
 # Run the command, stopping it after the given time (no coreutils timeout on macOS).
 run_with_timeout() {
-    local seconds="$1" pid ticks=0 rc=0
+    local seconds="$1" pid start rc=0
     shift
     "$@" &
     pid=$!
+    start=$SECONDS
     # Polled from here rather than watched by a second process: a watcher's
-    # sleep could outlive a command that ends at once.
+    # sleep could outlive a command that ends at once. Elapsed time is read
+    # from the clock: counting turns of the loop drifts under load.
     while kill -0 "$pid" 2>/dev/null; do
-        if [ "$ticks" -ge $((seconds * 50)) ]; then
+        if [ $((SECONDS - start)) -ge "$seconds" ]; then
             kill "$pid" 2>/dev/null || true
             break
         fi
         sleep 0.02
-        ticks=$((ticks + 1))
     done
     wait "$pid" || rc=$?
     return "$rc"
