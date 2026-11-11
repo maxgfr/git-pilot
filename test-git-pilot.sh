@@ -551,6 +551,57 @@ assert_eq "push to an unreachable remote exits 1, not 4" "$RC" "1"
 git -C "$local_clone" remote set-url --push origin "$remote"
 git -C "$local_clone" reset -q --hard HEAD~1
 
+# A branch whose remote branch was deleted goes back to its own remote, not origin.
+fork="$TEST_DIR/fork.git"
+git init -q --bare "$fork"
+git -C "$local_clone" remote add fork "$fork"
+git -C "$local_clone" checkout -q -b forked
+git -C "$local_clone" commit -q --allow-empty -m "feat: forked work"
+git -C "$local_clone" push -q -u fork forked 2>/dev/null
+git -C "$local_clone" push -q fork --delete forked 2>/dev/null
+git -C "$local_clone" fetch -q --prune fork
+git -C "$local_clone" commit -q --allow-empty -m "feat: more forked work"
+run "$local_clone" push
+assert_eq "push of a branch whose remote branch is gone succeeds" "$RC" "0"
+assert_eq "push keeps the branch's own remote" "$(git -C "$fork" rev-parse forked)" "$(git -C "$local_clone" rev-parse HEAD)"
+assert_eq "push does not move the branch to origin" "$(git -C "$remote" rev-parse --verify --quiet refs/heads/forked || echo none)" "none"
+assert_eq "push keeps the branch's upstream" "$(git -C "$local_clone" rev-parse --abbrev-ref 'forked@{upstream}')" "fork/forked"
+
+# A first push to a branch that already exists remotely, and is ahead: exit 4,
+# and the upstream is set so that 'rebase start' works right away.
+git -C "$seed" fetch -q origin
+git -C "$seed" checkout -q -b shared-topic origin/main
+printf '%s\n' "upstream" > "$seed/upstream-topic.txt"
+git -C "$seed" add upstream-topic.txt
+git -C "$seed" commit -q -m "feat: upstream topic"
+git -C "$seed" push -q origin shared-topic 2>/dev/null
+git -C "$seed" checkout -q main
+git -C "$local_clone" checkout -q -b shared-topic main
+printf '%s\n' "local" > "$local_clone/local-topic.txt"
+git -C "$local_clone" add local-topic.txt
+git -C "$local_clone" commit -q -m "feat: local topic"
+run "$local_clone" push
+assert_eq "first push to a remote branch that is ahead exits 4" "$RC" "4"
+assert_eq "a rejected first push still sets the upstream" "$(git -C "$local_clone" rev-parse --abbrev-ref 'shared-topic@{upstream}')" "origin/shared-topic"
+run "$local_clone" rebase start
+assert_eq "rebase start works after a rejected first push" "$RC" "0"
+run "$local_clone" push
+assert_eq "push succeeds after that rebase" "$RC" "0"
+
+# A failing pre-push hook runs once, not twice.
+git -C "$local_clone" commit -q --allow-empty -m "feat: hooked"
+hooks="$TEST_DIR/hooks"
+mkdir -p "$hooks"
+printf '%s\n' '#!/bin/sh' "echo run >> \"$TEST_DIR/pre-push-runs\"" 'exit 1' > "$hooks/pre-push"
+chmod +x "$hooks/pre-push"
+git -C "$local_clone" config core.hooksPath "$hooks"
+run "$local_clone" push
+assert_eq "push refused by a hook exits 1, not 4" "$RC" "1"
+assert_eq "the pre-push hook runs once" "$(wc -l < "$TEST_DIR/pre-push-runs" | xargs)" "1"
+git -C "$local_clone" config --unset core.hooksPath
+git -C "$local_clone" reset -q --hard HEAD~1
+git -C "$local_clone" checkout -q main
+
 # Arguments that would be ignored are refused instead.
 printf '%s\n' "a" "second local edit" "c" > "$local_clone/shared.txt"
 git -C "$local_clone" commit -q -am "feat: second local edit"

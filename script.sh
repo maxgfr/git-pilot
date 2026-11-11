@@ -814,11 +814,15 @@ cmd_branch_context() {
     truncate_diff "$diff" ""
 }
 
-# Remote that a branch without upstream is pushed to: remote.pushDefault, else
-# "origin", else the only remote. Fails when there is no obvious choice.
+# Remote that branch $1, which has no upstream, is pushed to: the branch's own
+# pushRemote or remote, then remote.pushDefault, "origin", or the only remote,
+# in the order Git itself uses. Fails when there is no obvious choice.
 default_push_remote() {
-    local remote
-    remote=$(git config --get remote.pushDefault 2>/dev/null || true)
+    local branch="$1" remote="" key
+    for key in "branch.$branch.pushRemote" remote.pushDefault "branch.$branch.remote"; do
+        remote=$(git config --get "$key" 2>/dev/null || true)
+        [ -z "$remote" ] || break
+    done
     if [ -z "$remote" ]; then
         if git config --get remote.origin.url >/dev/null 2>&1; then
             remote=origin
@@ -835,12 +839,15 @@ default_push_remote() {
 cmd_push() {
     [ $# -eq 0 ] || die "push takes no arguments: it pushes the current branch to its upstream."
 
-    # A branch that was never pushed gets its upstream on the way.
-    local args=() branch remote
-    if ! git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
-        branch=$(git branch --show-current 2>/dev/null || true)
-        [ -n "$branch" ] || die "Cannot push a detached HEAD: check out a branch first."
-        remote=$(default_push_remote) ||
+    local args=() branch remote=""
+    branch=$(git branch --show-current 2>/dev/null || true)
+    [ -n "$branch" ] || die "Cannot push a detached HEAD: check out a branch first."
+
+    # A branch that was never pushed gets its upstream on the way. A branch with
+    # a configured upstream is pushed as Git would push it, even when the remote
+    # branch is gone: its configuration says where it belongs.
+    if [ -z "$(git config --get "branch.$branch.merge" 2>/dev/null || true)" ]; then
+        remote=$(default_push_remote "$branch") ||
             die "The branch has no upstream and there is no single remote to choose. Run 'git push -u <remote> $branch' once."
         args=(-u "$remote" "$branch")
         log_info "No upstream yet: pushing to $remote and tracking $remote/$branch."
@@ -855,9 +862,20 @@ cmd_push() {
     # Ask the remote again without sending anything: only a branch that is
     # behind its remote is worth a rebase. Anything else (authentication,
     # network, a hook or a protected branch refusing the push) is a plain error.
+    # --no-verify: the pre-push hook already ran (and maybe failed) above.
     local verdict
-    verdict=$(git push --dry-run --porcelain ${args[@]+"${args[@]}"} 2>/dev/null || true)
+    verdict=$(git push --dry-run --porcelain --no-verify ${args[@]+"${args[@]}"} 2>/dev/null || true)
     if printf '%s\n' "$verdict" | grep -Eq '^!.*\[rejected\] \((fetch first|non-fast-forward)\)'; then
+        # A first push to a branch that already exists remotely set no upstream,
+        # and 'rebase start' needs one: track the remote branch now.
+        if [ -n "$remote" ]; then
+            if git fetch -q "$remote" "$branch" >&2 &&
+                git branch -q --set-upstream-to="$remote/$branch" "$branch" >&2; then
+                log_info "Now tracking $remote/$branch."
+            else
+                die "Push rejected: $remote/$branch has commits you do not have, and it could not be tracked. Run 'git branch --set-upstream-to=$remote/$branch', then 'rebase start'."
+            fi
+        fi
         log_error "Push rejected: the remote has commits you do not have. Run 'rebase start', then 'push' again."
         exit "$EXIT_PUSH_REJECTED"
     fi
