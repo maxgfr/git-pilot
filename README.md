@@ -79,7 +79,7 @@ git-pilot <command> [options]
 | `branch-context [--base <ref>]` | Print the branch's commits, PR template, conventions, and diff against its base (default: `origin/HEAD`, then `main` or `master`) |
 | `conflicts` | List the files with unresolved conflicts |
 | `merge-context` | Print the merge, rebase, cherry-pick or revert context: which side is which, the commits and diff stats involved |
-| `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them. Binary and delete/modify conflicts take the chosen side as a whole (`ours` or `theirs` only), which deletes the file if that side deleted it. Files that are not in conflict, or whose markers do not match the conflicts Git found, are refused and left untouched |
+| `take <ours\|theirs\|both> <file>...` | Resolve every hunk in the files with one strategy, then stage them. Binary and delete/modify conflicts take the chosen side as a whole (`ours` or `theirs` only), which deletes the file if that side deleted it. Files that are not in conflict, whose hunks are incomplete or ambiguous, or that contain marker-shaped lines of their own (an example, a fixture) are refused and left untouched |
 | `mark-resolved <file>...` | Stage the files after checking that no conflict markers remain (a lone `=======` line is reported, not refused) |
 | `rebase start\|continue\|abort` | `git pull --rebase`, continue after resolving conflicts, or abort |
 | `push` | Push the current branch; a branch that was never pushed gets its upstream on the way |

@@ -139,8 +139,8 @@ unrelated work:
    file without markers (binary file, or deleted on one side) gets that
    side's whole version, which deletes the file when that side deleted it;
    `both` exits `1` on such a file. A file that is not in conflict is refused,
-   and so is one whose markers do not match Git's conflicts (an unterminated
-   hunk, a `=======` line inside a side, a documented example of markers):
+   and so is one it cannot rewrite safely (an unterminated hunk, a marker
+   line inside a side, a version of the file that documents markers):
    nothing is changed, resolve it by hand.
 6. Finish: for a merge, commit (see **Commit**, the message can be the
    default `Merge branch '…'`); for a rebase, continue below; for a
