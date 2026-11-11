@@ -15,6 +15,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 # Isolate from the developer's global Git configuration (signing, hooks...).
 export GIT_CONFIG_GLOBAL="$TEST_DIR/gitconfig"
 export GIT_CONFIG_NOSYSTEM=1
+# The same results whether gitleaks is installed or not; its own test turns it on.
+export GIT_PILOT_GITLEAKS=0
 git config --global user.name "Pilot Tester"
 git config --global user.email "pilot@example.invalid"
 git config --global init.defaultBranch main
@@ -955,6 +957,27 @@ flagged_sample "a PyPI token" "pypi""-AgEIcHlwaS5vcmc${alnum:0:50}"
 flagged_sample "a DigitalOcean token" "dop""_v1_${hex}"
 flagged_sample "a Slack webhook" "https://hooks.slack"".com/services/T${alnum:0:9}/B${alnum:0:9}/${alnum:0:24}"
 rm "$guard/candidate.txt"
+
+# gitleaks, when installed, flags formats that the built-in patterns do not know.
+hex="8f3a9c2e7b1d4f6a0c5e9b3d7f2a6c1e"
+printf 'shopify = "%s"\n' "shpat""_$hex" > "$guard/shop.txt"
+git -C "$guard" add shop.txt
+run_env "$guard" GIT_PILOT_GITLEAKS=0 commit-context
+assert_not_contains "the built-in patterns do not know Shopify tokens" "$OUT" "secret-content: shop.txt"
+if command -v gitleaks >/dev/null 2>&1; then
+    run_env "$guard" GIT_PILOT_GITLEAKS=1 commit-context
+    assert_contains "gitleaks flags a Shopify token" "$OUT" "secret-content: shop.txt"
+    run_env "$guard" GIT_PILOT_GITLEAKS=1 commit -m "feat: shop" --dry-run
+    assert_eq "commit refuses what gitleaks flags (exit 5)" "$RC" "5"
+    printf 'aws_key = "AKIA%s"\n' "ABCDEFGHIJKLMNOP" > "$guard/both.txt"
+    git -C "$guard" add both.txt
+    run_env "$guard" GIT_PILOT_GITLEAKS=1 commit-context
+    assert_eq "a file flagged by both checks is listed once" "$(printf '%s\n' "$OUT" | grep -c 'secret-content: both.txt')" "1"
+    git -C "$guard" rm -q --cached both.txt
+else
+    printf 'SKIP gitleaks is not installed: its integration was not tested\n'
+fi
+git -C "$guard" rm -q --cached shop.txt
 
 git -C "$guard" mv .env .env.production
 run "$guard" commit-context

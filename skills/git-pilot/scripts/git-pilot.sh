@@ -107,6 +107,7 @@ Environment:
   GIT_PILOT_DIFF_BUDGET               Max diff characters printed (default 16000)
   GIT_PILOT_MAX_FILE_SIZE             Staged file size flagged as large, in bytes (default 5242880)
   Both must be non-negative integers; any other value is an error.
+  GIT_PILOT_GITLEAKS                  0 to skip gitleaks, which also scans staged changes when installed
   NO_COLOR                            Set to disable colors in diagnostics
 EOF
 }
@@ -549,7 +550,7 @@ resolve_path() {
 # ==============================================================================
 
 # Print one line per staged file that looks like a secret or is too large.
-staged_findings() {
+staged_findings_all() {
     local max_size="$MAX_FILE_SIZE"
     local paths=() blobs=() sizes=() meta file size i
 
@@ -614,7 +615,43 @@ staged_findings() {
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
              in_hunk && /^\+/ { print file "\t" substr($0, 2) }' |
         { grep -E -e "$token_pattern" || true; } |
-        cut -f1 | awk '!seen[$0]++ { print "secret-content: " $0 }'
+        cut -f1 | awk '{ print "secret-content: " $0 }'
+
+    gitleaks_findings
+}
+
+# Print one line per staged file that looks like a secret or is too large,
+# each line once.
+staged_findings() {
+    staged_findings_all | awk '!seen[$0]++'
+}
+
+# "secret-content: <path>" for each staged file that gitleaks flags, when it is
+# installed and GIT_PILOT_GITLEAKS is not 0. It knows far more formats than the
+# built-in patterns; without it, those are the only check.
+gitleaks_findings() {
+    [ "${GIT_PILOT_GITLEAKS:-1}" != 0 ] || return 0
+    command -v gitleaks >/dev/null 2>&1 || return 0
+
+    local report root
+    report=$(mktemp)
+    root=$(repo_root)
+    # "gitleaks git" since 8.19, "gitleaks protect" before.
+    if gitleaks git --staged --no-banner --redact --log-level error --exit-code 0 \
+            --report-format json --report-path "$report" "$root" >/dev/null 2>&1 ||
+        gitleaks protect --staged --no-banner --redact --log-level error --exit-code 0 \
+            --report-format json --report-path "$report" --source "$root" >/dev/null 2>&1; then
+        # Report entries carry the path as '"File": "<path>",' on a line of their own.
+        local path
+        sed -n 's/^[[:space:]]*"File":[[:space:]]*"\(.*\)",\{0,1\}$/\1/p' "$report" |
+            awk '{ gsub(/\\"/, "\""); gsub(/\\\\/, "\\"); print }' |
+            while IFS= read -r path; do
+                printf 'secret-content: %s\n' "$(quote_path "$path")"
+            done
+    else
+        log_warn "gitleaks is installed but did not run; only the built-in secret patterns were checked."
+    fi
+    rm -f "$report"
 }
 
 # Print a "Conventions:" section describing the repository's commit style.
