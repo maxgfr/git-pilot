@@ -9,6 +9,17 @@
 
 set -euo pipefail
 
+# Text tools work on bytes. Under a UTF-8 locale, the macOS awk, sed, tr and
+# grep abort on bytes that are not valid UTF-8 (a Latin-1 file in a diff),
+# which would silently truncate what the checks see. Git keeps the user's locale.
+awk() { LC_ALL=C command awk "$@"; }
+grep() { LC_ALL=C command grep "$@"; }
+sed() { LC_ALL=C command sed "$@"; }
+tr() { LC_ALL=C command tr "$@"; }
+cut() { LC_ALL=C command cut "$@"; }
+sort() { LC_ALL=C command sort "$@"; }
+comm() { LC_ALL=C command comm "$@"; }
+
 VERSION="2.1.0"
 
 # Exit codes
@@ -166,7 +177,7 @@ marker_lines_against() {
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
-             in_hunk && /^\+<<<<<<<( |$)/ { print file "\t" substr($0, 2) }' | LC_ALL=C sort -u
+             in_hunk && /^\+(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)/ { print file "\t" substr($0, 2) }' | sort -u
 }
 
 # Files where an unfinished resolution left conflict markers: marker lines that
@@ -188,20 +199,25 @@ leftover_marker_files() {
         fi
     done
 
-    lines=$(marker_lines_against "${refs[0]}")
+    # Every step must succeed: a scan that fails half way would report fewer
+    # files than there are, and let conflict markers be committed.
+    local other
+    lines=$(marker_lines_against "${refs[0]}") || return 1
     for ((i = 1; i < ${#refs[@]}; i++)); do
         [ -n "$lines" ] || break
-        lines=$(LC_ALL=C comm -12 <(printf '%s\n' "$lines") <(marker_lines_against "${refs[$i]}"))
+        other=$(marker_lines_against "${refs[$i]}") || return 1
+        lines=$(comm -12 <(printf '%s\n' "$lines") <(printf '%s\n' "$other")) || return 1
     done
     [ -z "$lines" ] || printf '%s\n' "$lines" | cut -f1 | awk '!seen[$0]++'
 }
 
-# Unmerged files plus files where a resolution left conflict markers.
+# Unmerged files plus files where a resolution left conflict markers. Exits
+# with an error rather than return an incomplete list.
 conflicted_files() {
-    {
-        unmerged_files
-        leftover_marker_files
-    } | awk 'NF && !seen[$0]++'
+    local unmerged leftover
+    unmerged=$(unmerged_files)
+    leftover=$(leftover_marker_files) || die "Could not scan the changes for conflict markers."
+    printf '%s\n%s\n' "$unmerged" "$leftover" | awk 'NF && !seen[$0]++'
 }
 
 is_unmerged() {

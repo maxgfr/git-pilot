@@ -420,6 +420,24 @@ run "$qt" take ours '"q\"uote.txt"'
 assert_eq "take accepts a name in Git's quoted form" "$RC" "0"
 assert_eq "take resolved the quoted name" "$(cat "$qt/q\"uote.txt")" $'line 1\nours\nline 3'
 
+# Content that is not UTF-8 (a Latin-1 file) must not break the checks under a
+# UTF-8 locale, where some awk, sed and grep builds abort on invalid bytes.
+l1=$(new_repo latin1)
+printf 'caf\351\n' > "$l1/latin1.txt"
+git -C "$l1" add latin1.txt
+run_env "$l1" LC_ALL=en_US.UTF-8 conflicts
+assert_eq "conflicts handles Latin-1 content" "$RC" "0"
+run_env "$l1" LC_ALL=en_US.UTF-8 commit-context
+assert_eq "commit-context handles Latin-1 content" "$RC" "0"
+run_env "$l1" LC_ALL=en_US.UTF-8 commit -m "feat: add latin1 file"
+assert_eq "commit handles Latin-1 content" "$RC" "0"
+printf 'caf\351 au lait\n' > "$l1/latin1.txt"
+printf '%s\n' "<<<<<<< HEAD" "a" "=======" "b" ">>>>>>> other" > "$l1/left.txt"
+git -C "$l1" add -A
+run_env "$l1" LC_ALL=en_US.UTF-8 commit -m "feat: more"
+assert_eq "markers next to Latin-1 content still block the commit (exit 2)" "$RC" "2"
+assert_contains "the blocked commit names the file with markers" "$ERR" "left.txt"
+
 section "cherry-pick and revert conflicts"
 
 cp=$(conflicted_repo cherry-pick)
@@ -461,6 +479,13 @@ run "$fx" conflicts
 assert_eq "a committed fixture is not a conflict" "$OUT" ""
 run "$fx" commit -m "feat: add code"
 assert_eq "commit works next to a committed fixture" "$RC" "0"
+
+printf '%s\n' "half resolved" ">>>>>>> other" > "$fx/half.txt"
+git -C "$fx" add half.txt
+run "$fx" commit -m "feat: half" --dry-run
+assert_eq "commit refuses a leftover closing marker (exit 2)" "$RC" "2"
+git -C "$fx" rm -q --cached half.txt
+rm "$fx/half.txt"
 
 printf '%s\n' "<<<<<<< HEAD" "left over" >> "$fx/fixture.txt"
 run "$fx" conflicts
