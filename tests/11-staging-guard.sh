@@ -137,6 +137,18 @@ printf '%s\n' '#!/bin/sh' "echo run >> \"$TEST_DIR/stub-fail-runs\"" '[ "$2" = "
 assert_eq "a failing gitleaks scans once" "$(grep -c run "$TEST_DIR/stub-fail-runs")" "2"
 git -C "$guard" rm -q --cached shop.txt
 
+# A NUL byte in a text diff must not blind the token scan (GNU grep would call
+# the whole stream binary), nor hide a token on the same line (macOS awk).
+nul=$(new_repo nul-byte)
+{ awk 'BEGIN { for (i = 0; i < 200; i++) print "padding line " i " to pass the first 8000 bytes of the diff" }'
+  printf 'a\000b\n'; printf 'x\000 key = "AKIA%s"\n' "ABCDEFGHIJKLMNOP"; } > "$nul/data.txt"
+printf 'aws_key = "AKIA%s"\n' "QRSTUVWXYZABCDEF" > "$nul/later.txt"
+git -C "$nul" add -A
+run "$nul" commit -m "feat: nul" --dry-run
+assert_eq "commit refuses a key next to a NUL byte (exit 5)" "$RC" "5"
+assert_contains "the key after the NUL on the same line is found" "$ERR" "secret-content: data.txt"
+assert_contains "a key in a later file is still found" "$ERR" "secret-content: later.txt"
+
 git -C "$guard" mv .env .env.production
 run "$guard" commit-context
 assert_contains "a renamed secret file is flagged under its new name" "$OUT" "secret-file: .env.production"

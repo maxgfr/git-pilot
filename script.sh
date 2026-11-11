@@ -223,8 +223,10 @@ unmerged_files() {
 # Sorted, unique "path<TAB>marker line" pairs, from the index and the working
 # tree, for conflict marker lines that commit (or tree) $1 does not have.
 # Streamed: with pipefail, a failing git diff still fails the whole pipeline.
+# NUL bytes are dropped first: GNU grep would treat the stream as binary and
+# print nothing, and macOS awk cuts a line at its first NUL.
 marker_lines_against() {
-    { scan_diff --cached "$1" -- && scan_diff "$1" --; } | awk "$AWK_HEADER_PATH"'
+    { scan_diff --cached "$1" -- && scan_diff "$1" --; } | tr -d '\000' | awk "$AWK_HEADER_PATH"'
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
@@ -690,7 +692,8 @@ staged_findings_all() {
     token_pattern=$(IFS='|'; printf '%s' "${token_patterns[*]}")
     # File headers only count outside hunks (an added "++ x" line reads "+++ x").
     # Streamed: with pipefail, a failing git diff still fails the pipeline.
-    scan_diff --cached --diff-filter=ACMR |
+    # Without NUL bytes, which would make GNU grep print nothing at all.
+    scan_diff --cached --diff-filter=ACMR | tr -d '\000' |
         awk "$AWK_HEADER_PATH"'
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
