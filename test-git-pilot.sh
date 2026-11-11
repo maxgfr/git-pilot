@@ -841,6 +841,19 @@ run "$uc" status
 assert_contains "status shows an unmerged file with its line counts" "$OUT" "U +4 -0 conflict.txt"
 assert_not_contains "status does not repeat an unmerged file as modified" "$OUT" "M +4 -0 conflict.txt"
 
+# Names Git quotes are quoted the same way here, one entry per line.
+printf '%s\n' "tab" > "$st/tab"$'\t'"name.txt"
+printf '%s\n' "newline" > "$st/new"$'\n'"line.txt"
+run "$st" status
+assert_contains "status quotes an untracked name with a tab" "$OUT" '  4 "tab\tname.txt"'
+assert_contains "status quotes an untracked name with a newline" "$OUT" '  8 "new\nline.txt"'
+qs=$(new_repo quoted-secret)
+printf 'x\n' > "$qs/a\"b.pem"
+git -C "$qs" add -A
+run "$qs" commit-context
+assert_contains "a flagged name is quoted like Git does" "$OUT" 'secret-file: "a\"b.pem"'
+rm "$st/tab"$'\t'"name.txt" "$st/new"$'\n'"line.txt"
+
 git -C "$st" checkout -q --detach
 run "$st" status
 assert_contains "status names a detached HEAD" "$OUT" "Branch: detached HEAD"

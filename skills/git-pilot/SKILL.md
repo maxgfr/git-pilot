@@ -13,7 +13,9 @@ The script is `scripts/git-pilot.sh`, relative to this SKILL.md. Run it with
 repository. If `git-pilot` is on `PATH` (Homebrew install), it is the same
 tool. stdout is data for you; stderr is diagnostics. Paths in the output are
 relative to the repository root, and `take` and `mark-resolved` accept them
-back from any directory.
+back from any directory. A name with a tab, a newline, a double quote or a
+backslash is printed quoted, as Git does (`"a\tb.txt"`): pass it back exactly
+as printed, quotes included.
 
 Exit codes: `0` ok, `1` error, `2` conflict markers or unmerged files present,
 `3` rebase stopped on conflicts, `4` push rejected because the remote is

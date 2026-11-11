@@ -87,7 +87,7 @@ git-pilot <command> [options]
 
 Commands work from any directory of the repository. Printed paths are relative to the repository root; `take` and `mark-resolved` accept paths relative to the current directory or to the root.
 
-Paths that contain a tab, a newline, a double quote or a backslash are printed the way Git quotes them (`"a\tb.txt"`), and `take` and `mark-resolved` accept them back in that form.
+Paths that contain a tab, a newline, a double quote or a backslash are printed the way Git quotes them (`"a\tb.txt"`) in every list, so each entry stays on one line; `take` and `mark-resolved` accept them back in that form.
 
 stdout carries data and stderr carries diagnostics, so the output is easy to pipe:
 

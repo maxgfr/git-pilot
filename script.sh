@@ -154,6 +154,31 @@ git_path() {
     GIT_LITERAL_PATHSPECS=1 git_plain "$@"
 }
 
+# True when Git prints path $1 quoted: it has a double quote, a backslash or a
+# control character (core.quotePath=false leaves other non-ASCII bytes alone).
+needs_quoting() {
+    case "$1" in
+        *[\"\\]*|*[[:cntrl:]]*) return 0 ;;
+    esac
+    return 1
+}
+
+# Print path $1 the way Git does, so that every list names a file the same way
+# and take and mark-resolved accept it back.
+quote_path() {
+    local path="$1"
+    if ! needs_quoting "$path"; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    path=${path//\\/\\\\}
+    path=${path//\"/\\\"}
+    path=${path//$'\t'/\\t}
+    path=${path//$'\n'/\\n}
+    path=${path//$'\r'/\\r}
+    printf '"%s"\n' "$path"
+}
+
 # awk function: the path of a "+++ b/<path>" diff header, without the prefix.
 # Git quotes a path containing a double quote, a backslash or a control
 # character ("+++ \"b/a\\\"b\""): it is kept quoted, as "git diff --name-only"
@@ -547,13 +572,13 @@ staged_findings() {
             case "${file##*/}" in
                 .env.example|.env.sample|.env.template|.env.dist) ;;
                 .env|.env.*|*.pem|*.key|*.p12|*.pfx|*.keystore|*.jks|id_rsa|id_dsa|id_ecdsa|id_ed25519|.netrc|.pgpass|.htpasswd)
-                    printf '%s\n' "secret-file: $file" ;;
+                    printf '%s\n' "secret-file: $(quote_path "$file")" ;;
             esac
             # Not a number: an object git does not have, such as a submodule commit.
             size=${sizes[$i]:-0}
             case "$size" in *[!0-9]*) size=0 ;; esac
             if [ "$size" -gt "$max_size" ]; then
-                printf '%s\n' "large-file: $file ($size bytes)"
+                printf '%s\n' "large-file: $(quote_path "$file") ($size bytes)"
             fi
         done
     fi
@@ -747,10 +772,19 @@ file_sizes() {
 # Print "  <bytes> <path>" for each untracked file, reading sizes in batches of
 # 200 files instead of starting a process per file.
 untracked_summary() {
-    local root file batch=()
+    local root file batch=() size
     root=$(repo_root)
     while IFS= read -r -d '' file; do
-        if [ -f "$root/$file" ] && [ -r "$root/$file" ]; then
+        if needs_quoting "$file"; then
+            # Not batched: wc prints the name, and a newline in it would split the line.
+            [ "${#batch[@]}" -eq 0 ] || file_sizes "$root" "${batch[@]}"
+            batch=()
+            size=-
+            if [ -f "$root/$file" ] && [ -r "$root/$file" ]; then
+                size=$(wc -c < "$root/$file" | tr -d ' ')
+            fi
+            printf '  %s %s\n' "$size" "$(quote_path "$file")"
+        elif [ -f "$root/$file" ] && [ -r "$root/$file" ]; then
             batch+=("$root/$file")
             if [ "${#batch[@]}" -ge 200 ]; then
                 file_sizes "$root" "${batch[@]}"
