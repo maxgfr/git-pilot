@@ -116,21 +116,6 @@ During a rebase, "ours" is the upstream and "theirs" is your commit being replay
 
 The budget, the size and the timeout must be non-negative integers; any other value (`16k`, `5MB`) is an error. Diagnostics are colored when stderr is a terminal, unless `NO_COLOR` is set.
 
-## Migrating from 1.x
-
-Version 2 removes the built-in AI providers (`claude-code`, `codex`, `anthropic`, `openai`, `gemini`, `mistral`), along with `setup`, `config`, API keys, and the provider and formatting flags. The AI work now happens in the agent that runs the skill.
-
-| 1.x | 2.x |
-|---|---|
-| `git-pilot` / `git-pilot -a -c -e -l fr` | Ask your agent: "commit everything, conventional, with emoji, in French" |
-| `git-pilot resolve` | "resolve the conflicts" (the agent uses `conflicts`, `merge-context`, `mark-resolved`) |
-| `git-pilot rebase` | "pull with rebase and fix the conflicts" (`rebase start` / `continue`) |
-| `git-pilot setup` / `config` | Not needed. You can delete `~/.config/git-pilot/` |
-
 ## License
 
 [MIT](LICENSE)
-
----
-
-Inspired by [claude-auto-commit](https://github.com/0xkaz/claude-auto-commit).
