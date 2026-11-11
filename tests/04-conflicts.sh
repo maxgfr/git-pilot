@@ -264,6 +264,13 @@ run "$c" take ours conflict.txt
 assert_eq "take refuses an already-staged file with NUL bytes" "$RC" "1"
 assert_contains "the staged NUL refusal is explained" "$ERR" "NUL bytes"
 
+# A staged leftover whose name Git quotes is still found in the leftover list.
+c=$(conflicted_repo quoted-staged 'a"b.md')
+printf '%s\n' "line 1" "<<<<<<< HEAD" "ours" "=======" "theirs" ">>>>>>> other" "line 3" > "$c/a\"b.md"
+git -C "$c" add -- 'a"b.md'
+run "$c" take ours 'a"b.md'
+assert_eq "take resolves a staged leftover with a quoted name" "$(cat "$c/a\"b.md")" $'line 1\nours\nline 3'
+
 # A staged leftover with no other side to check against (after "git stash pop").
 sp=$(new_repo stash-pop)
 printf '%s\n' "a" > "$sp/p.txt"

@@ -230,7 +230,7 @@ marker_lines_against() {
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
-             in_hunk && /^\+(<+|>+|\|+)( |\r?$)/ { print file "\t" substr($0, 2) }' | sort -u
+             in_hunk && /^\+((<+|>+|\|+)( |\r?$)|=+\r?$)/ { print file "\t" substr($0, 2) }' | sort -u
 }
 
 # Files where an unfinished resolution left conflict markers: marker lines that
@@ -273,19 +273,27 @@ keep_marker_size() {
     pairs=$(cat)
     [ -n "$pairs" ] || return 0
     # One check-attr for every file. A name Git prints quoted keeps size 7.
-    sizes=$(printf '%s\n' "$pairs" | cut -f1 | awk '!seen[$0]++ && substr($0, 1, 1) != "\""' |
+    sizes=$(printf '%s\n' "$pairs" | cut -f1 | awk '!seen[$0]++' |
         git_plain -C "$(repo_root)" check-attr --stdin conflict-marker-size) || return 1
     printf '%s\n@@git-pilot-sizes-end@@\n%s\n' "$sizes" "$pairs" | awk '
         !done && $0 == "@@git-pilot-sizes-end@@" { done = 1; next }
         !done {
             i = index($0, ": conflict-marker-size: ")
-            if (i) { value = substr($0, i + 24); if (value ~ /^[0-9]+$/) size[substr($0, 1, i - 1)] = value }
+            if (i) { value = substr($0, i + 24); if (value ~ /^\+?[0-9]+$/ && value + 0 > 0) size[substr($0, 1, i - 1)] = value + 0 }
             next
         }
         {
             tab = index($0, "\t"); path = substr($0, 1, tab - 1); line = substr($0, tab + 1)
-            match(line, /^(<+|>+|\|+)/)
-            if (RLENGTH == ((path in size) ? size[path] : 7)) print
+            match(line, /^(<+|>+|\|+|=+)/)
+            n++; row[n] = $0; row_path[n] = path; row_len[n] = RLENGTH; row_char[n] = substr(line, 1, 1)
+            seen[path, substr(line, 1, 1), RLENGTH] = 1
+        }
+        END {
+            for (k = 1; k <= n; k++) {
+                path = row_path[k]; len = row_len[k]
+                if (row_char[k] == "=") continue
+                if (len == ((path in size) ? size[path] : 7) || ((path, "<", len) in seen && (path, "=", len) in seen && (path, ">", len) in seen)) print row[k]
+            }
         }'
 }
 
@@ -321,7 +329,12 @@ file_has_markers() {
     local size
     size=$(marker_size "$1")
     tr -d '\000' < "$1" |
-        awk -v size="$size" "$AWK_MARKER_FUNCS"'BEGIN { re = marker_re(size) } $0 ~ re { found = 1 } END { exit !found }'
+        awk -v size="$size" "$AWK_MARKER_FUNCS"'BEGIN { re = marker_re(size) } $0 ~ re { found = 1 }
+            # Markers of another size: the attribute changed since Git wrote them.
+            /^<+( |\r?$)/ { match($0, /^<+/); opened[RLENGTH] = 1 }
+            /^=+\r?$/ { match($0, /^=+/); if (RLENGTH in opened) split_at[RLENGTH] = 1 }
+            /^>+( |\r?$)/ { match($0, /^>+/); if (RLENGTH in split_at) found = 1 }
+            END { exit !found }'
 }
 
 # awk functions. marker_re(size) matches a line shaped like an opening, base or
@@ -609,9 +622,12 @@ final_newline_of_side() {
 marker_size() {
     local size
     size=$(git_path check-attr conflict-marker-size -- "$1" 2>/dev/null | sed 's/.*: //')
+    size=${size#+}
     case "$size" in
-        ''|*[!0-9]*) size=7 ;;
+        ''|*[!0-9]*|??????*) size=7 ;;
     esac
+    size=$((10#$size))
+    [ "$size" -gt 0 ] || size=7
     printf '%s\n' "$size"
 }
 
@@ -1401,7 +1417,7 @@ cmd_take() {
             [ -n "$leftover" ] || leftover=$(leftover_marker_files) ||
                 die "Could not scan the changes for conflict markers."
             name=$(git_path ls-files --full-name -- "$file" 2>/dev/null || true)
-            if [ -z "$name" ] || ! printf '%s\n' "$leftover" | awk -v name="$name" '$0 == name { found = 1 } END { exit !found }'; then
+            if [ -z "$name" ] || ! printf '%s\n' "$leftover" | GIT_PILOT_NAME="$name" awk '$0 == ENVIRON["GIT_PILOT_NAME"] { found = 1 } END { exit !found }'; then
                 die "Not in conflict, nothing to resolve: $arg"
             fi
             ! has_nul "$file" ||

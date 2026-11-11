@@ -36,6 +36,32 @@ git -C "$lm" add -A
 run "$lm" commit -m "feat: short" --dry-run
 assert_eq "markers of a declared size of 3 are caught (exit 2)" "$RC" "2"
 
+# A merge that brings a new conflict-marker-size: Git wrote 7-character
+# markers, the attribute now says 10. The markers must still be seen.
+am=$(new_repo attribute-in-merge)
+printf '%s\n' "top" "1" "2" "3" "4" "end" > "$am/f.md"
+git -C "$am" add f.md
+git -C "$am" commit -q -m "docs: base"
+git -C "$am" checkout -q -b other
+printf '%s\n' "THEIRS" "1" "2" "3" "4" "END" > "$am/f.md"
+printf '%s\n' "f.md conflict-marker-size=10" > "$am/.gitattributes"
+git -C "$am" add -A
+git -C "$am" commit -q -m "docs: theirs, with an attribute"
+git -C "$am" checkout -q main
+printf '%s\n' "OURS" "1" "2" "3" "4" "end" > "$am/f.md"
+git -C "$am" commit -q -am "docs: ours"
+git -C "$am" merge -q other >/dev/null 2>&1 || true
+cp "$am/f.md" "$TEST_DIR/am.md"
+run "$am" mark-resolved f.md
+assert_eq "mark-resolved sees markers written before the attribute changed (exit 2)" "$RC" "2"
+run "$am" take ours f.md
+assert_eq "take refuses markers of another size than the attribute says" "$RC" "1"
+assert_eq "that refusal leaves the file untouched" "$(cat "$am/f.md")" "$(cat "$TEST_DIR/am.md")"
+cp "$TEST_DIR/am.md" "$am/f.md"
+git -C "$am" add f.md
+run "$am" commit -m "docs: merge" --dry-run
+assert_eq "commit refuses markers written before the attribute changed (exit 2)" "$RC" "2"
+
 # A diff filter that fails must not blind the checks.
 bf=$(new_repo broken-filters)
 printf '%s\n' "*.dat diff=dat" > "$bf/.gitattributes"
