@@ -141,12 +141,13 @@ current_branch() {
     printf '%s\n' "${branch:-detached HEAD}"
 }
 
-# git for output that is printed or parsed: no colors, unquoted non-ASCII paths
-# and diffs of the whole repository (diff.relative would limit them to the
-# current directory), whatever the user's configuration says.
+# git for output that is printed or parsed: no colors, no signatures in logs,
+# unquoted non-ASCII paths, and diffs of the whole repository (diff.relative
+# would limit them to the current directory) in Git's own order (a missing
+# diff.orderFile would make every diff fail), whatever the user's configuration says.
 git_plain() {
     git -c color.ui=never -c color.diff=never -c core.quotePath=false \
-        -c diff.relative=false -c log.showSignature=false "$@"
+        -c diff.relative=false -c diff.orderFile=/dev/null -c log.showSignature=false "$@"
 }
 
 # git with a path the user named: a pathspec such as "*.txt" or ":/" is the
@@ -180,6 +181,15 @@ quote_path() {
     printf '"%s"\n' "$path"
 }
 
+# The raw diff that the safety checks read: the stored bytes, without textconv
+# filters that could fail or rewrite the content, and with
+# the a/ b/ prefixes that the parsers expect whatever diff.noprefix says. A
+# failure is returned, never hidden: a check must not pass on a diff it did not see.
+scan_diff() {
+    git_plain diff -U0 --no-color --no-ext-diff --no-textconv \
+        --src-prefix=a/ --dst-prefix=b/ "$@"
+}
+
 # awk function: the path of a "+++ b/<path>" diff header, without the prefix.
 # Git quotes a path containing a double quote, a backslash or a control
 # character ("+++ \"b/a\\\"b\""): it is kept quoted, as "git diff --name-only"
@@ -203,14 +213,13 @@ unmerged_files() {
 # Sorted, unique "path<TAB>marker line" pairs, from the index and the working
 # tree, for conflict marker lines that commit (or tree) $1 does not have.
 marker_lines_against() {
-    {
-        git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$1" -- 2>/dev/null || true
-        git_plain diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$1" -- 2>/dev/null || true
-    } | awk "$AWK_HEADER_PATH"'
+    local diffs
+    diffs=$(scan_diff --cached "$1" -- && scan_diff "$1" --) || return 1
+    printf '%s\n' "$diffs" | awk "$AWK_HEADER_PATH"'
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
-             in_hunk && /^\+(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)/ { print file "\t" substr($0, 2) }' | sort -u
+             in_hunk && /^\+(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { print file "\t" substr($0, 2) }' | sort -u
 }
 
 # Files where an unfinished resolution left conflict markers: marker lines that
@@ -552,16 +561,23 @@ resolve_path() {
 # Print one line per staged file that looks like a secret or is too large.
 staged_findings_all() {
     local max_size="$MAX_FILE_SIZE"
-    local paths=() blobs=() sizes=() meta file size i
+    local paths=() blobs=() sizes=() meta file size i raw
 
     # Staged paths and their blob ids from one "git diff --raw" (records are
     # ":modes <old blob> <new blob> <status>" NUL path NUL), then every size from
-    # one "git cat-file": two processes in all instead of two per file.
+    # one "git cat-file": two processes in all instead of two per file. The
+    # listing goes through a file so that a failing git is noticed.
+    raw=$(mktemp)
+    if ! git_plain diff --cached --raw -z --no-abbrev --no-renames --diff-filter=ACM > "$raw"; then
+        rm -f "$raw"
+        return 1
+    fi
     while IFS= read -r -d '' meta && IFS= read -r -d '' file; do
         meta=${meta% *}
         blobs+=("${meta##* }")
         paths+=("$file")
-    done < <(git_plain diff --cached --raw -z --no-abbrev --no-renames --diff-filter=ACM)
+    done < "$raw"
+    rm -f "$raw"
 
     if [ "${#paths[@]}" -gt 0 ]; then
         while IFS= read -r size; do
@@ -606,16 +622,17 @@ staged_findings_all() {
     )
     local token_pattern
     token_pattern=$(IFS='|'; printf '%s' "${token_patterns[*]}")
-    # File headers only count outside hunks (an added "++ x" line reads "+++ x"),
-    # and the prefixes are forced so that diff.noprefix cannot shift the path.
-    git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR 2>/dev/null |
+    # File headers only count outside hunks (an added "++ x" line reads "+++ x").
+    local diff
+    diff=$(scan_diff --cached --diff-filter=ACMR) || return 1
+    printf '%s\n' "$diff" |
         awk "$AWK_HEADER_PATH"'
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
              in_hunk && /^\+/ { print file "\t" substr($0, 2) }' |
         { grep -E -e "$token_pattern" || true; } |
-        cut -f1 | awk '{ print "secret-content: " $0 }'
+        cut -f1 | awk '{ print "secret-content: " $0 }' || return 1
 
     gitleaks_findings
 }
@@ -744,8 +761,12 @@ cmd_commit_context() {
         log_info "Staged all changes."
     fi
 
+    # The diff shown to the agent keeps textconv (a readable view of binary
+    # formats), but a failing filter must not end the command with git's code.
     local diff
-    diff=$(git_plain diff --cached --no-color --no-ext-diff)
+    diff=$(git_plain diff --cached --no-color --no-ext-diff) ||
+        diff=$(scan_diff --cached) ||
+        die "git diff --cached failed (see git's message above)."
     # A merge resolved entirely to our side stages nothing, yet still needs its commit.
     local merging=false
     [ ! -f "$(git_dir)/MERGE_HEAD" ] || merging=true
@@ -758,7 +779,7 @@ cmd_commit_context() {
     git_plain diff --cached --name-status
 
     local findings
-    findings=$(staged_findings)
+    findings=$(staged_findings) || die "Could not check the staged changes for secrets and large files."
     if [ -n "$findings" ]; then
         printf '\n%s\n' "Warnings (confirm with the user before committing):"
         printf '%s\n' "$findings" | sed 's/^/  /'
@@ -1048,7 +1069,7 @@ cmd_commit() {
     fi
 
     local findings
-    findings=$(staged_findings)
+    findings=$(staged_findings) || die "Could not check the staged changes for secrets and large files."
     if [ -n "$findings" ] && [ "$allow_flagged" != true ]; then
         log_error "Refusing to commit flagged files:"
         printf '%s\n' "$findings" | sed 's/^/  /' >&2

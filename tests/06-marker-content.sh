@@ -22,6 +22,29 @@ assert_eq "commit refuses a leftover closing marker (exit 2)" "$RC" "2"
 git -C "$fx" rm -q --cached half.txt
 rm "$fx/half.txt"
 
+# A diff filter that fails must not blind the checks.
+bf=$(new_repo broken-filters)
+printf '%s\n' "*.dat diff=dat" > "$bf/.gitattributes"
+printf '%s\n' "one" > "$bf/b.dat"
+git -C "$bf" add -A
+git -C "$bf" commit -q -m "chore: add data"
+git -C "$bf" config diff.dat.textconv "$TEST_DIR/no-such-textconv"
+git -C "$bf" config diff.orderFile "$TEST_DIR/no-such-order-file"
+printf '%s\n' "two" > "$bf/b.dat"
+printf '%s\n' "<<<<<<< HEAD" "a" "=======" "b" ">>>>>>> other" > "$bf/z.txt"
+printf 'aws_key = "AKIA%s"\n' "ABCDEFGHIJKLMNOP" > "$bf/k.txt"
+git -C "$bf" add -A
+run "$bf" conflicts
+assert_eq "conflicts sees markers despite a broken textconv and orderFile" "$OUT" "z.txt"
+run "$bf" commit -m "feat: broken" --dry-run
+assert_eq "commit refuses markers despite a broken textconv (exit 2)" "$RC" "2"
+git -C "$bf" rm -q --cached z.txt
+run "$bf" commit -m "feat: broken" --dry-run
+assert_eq "commit refuses a key despite a broken textconv (exit 5)" "$RC" "5"
+run "$bf" commit-context
+assert_eq "commit-context survives a broken textconv" "$RC" "0"
+assert_contains "commit-context still flags the key" "$OUT" "secret-content: k.txt"
+
 printf '%s\n' "<<<<<<< HEAD" "left over" >> "$fx/fixture.txt"
 run "$fx" conflicts
 assert_eq "a new marker line in the fixture is a conflict" "$OUT" "fixture.txt"
