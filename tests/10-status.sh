@@ -29,6 +29,15 @@ printf '%s\n' "newline" > "$st/new"$'\n'"line.txt"
 run "$st" status
 assert_contains "status quotes an untracked name with a tab" "$OUT" '  4 "tab\tname.txt"'
 assert_contains "status quotes an untracked name with a newline" "$OUT" '  8 "new\nline.txt"'
+printf '%s\n' "ctrl" > "$st/c"$'\001'"d.txt"
+printf '%s\n' "nel" > "$st/n"$'\302\205'"l.txt"
+run "$st" status
+assert_contains "status quotes other control bytes in octal, like Git" "$OUT" '  5 "c\001d.txt"'
+assert_contains "status leaves U+0085 unquoted, like Git" "$OUT" "  4 n"$'\302\205'"l.txt"
+git_names=$(git -C "$st" -c core.quotePath=false ls-files --others --exclude-standard | grep -E '^"c|^n')
+assert_contains "Git itself quotes the control byte the same way" "$git_names" '"c\001d.txt"'
+assert_contains "Git itself leaves U+0085 unquoted" "$git_names" "n"$'\302\205'"l.txt"
+rm "$st/c"$'\001'"d.txt" "$st/n"$'\302\205'"l.txt"
 qs=$(new_repo quoted-secret)
 printf 'x\n' > "$qs/a\"b.pem"
 git -C "$qs" add -A

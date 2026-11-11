@@ -112,8 +112,9 @@ During a rebase, "ours" is the upstream and "theirs" is your commit being replay
 | `GIT_PILOT_DIFF_BUDGET` | `16000` | Max diff characters printed by `commit-context` and `branch-context` |
 | `GIT_PILOT_MAX_FILE_SIZE` | `5242880` | Staged file size (bytes) flagged as large |
 | `GIT_PILOT_GITLEAKS` | `1` | `0` skips gitleaks; otherwise it scans the staged changes whenever it is installed |
+| `GIT_PILOT_GITLEAKS_TIMEOUT` | `60` | Seconds gitleaks may run before it is stopped (the built-in patterns still apply) |
 
-Both must be non-negative integers; any other value (`16k`, `5MB`) is an error. Diagnostics are colored when stderr is a terminal, unless `NO_COLOR` is set.
+The budget, the size and the timeout must be non-negative integers; any other value (`16k`, `5MB`) is an error. Diagnostics are colored when stderr is a terminal, unless `NO_COLOR` is set.
 
 ## Migrating from 1.x
 

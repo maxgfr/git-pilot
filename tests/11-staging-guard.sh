@@ -101,9 +101,36 @@ if command -v gitleaks >/dev/null 2>&1; then
     run_env "$guard" GIT_PILOT_GITLEAKS=1 commit-context
     assert_eq "a file flagged by both checks is listed once" "$(printf '%s\n' "$OUT" | grep -c 'secret-content: both.txt')" "1"
     git -C "$guard" rm -q --cached both.txt
+    # Paths come back from its JSON report decoded, and quoted the way Git does.
+    printf 'shopify = "%s"\n' "shpat""_$hex" > "$guard/amp&er.txt"
+    printf 'shopify = "%s"\n' "shpat""_$hex" > "$guard/ta"$'\t'"b.txt"
+    git -C "$guard" add -A
+    run_env "$guard" GIT_PILOT_GITLEAKS=1 commit-context
+    assert_contains "gitleaks paths are decoded" "$OUT" "secret-content: amp&er.txt"
+    assert_contains "gitleaks paths are quoted like Git does" "$OUT" 'secret-content: "ta\tb.txt"'
+    git -C "$guard" rm -q --cached "amp&er.txt" "ta"$'\t'"b.txt"
+    rm "$guard/amp&er.txt" "$guard/ta"$'\t'"b.txt"
 else
     printf 'SKIP gitleaks is not installed: its integration was not tested\n'
 fi
+
+# A gitleaks that hangs is stopped, and one that fails is reported, once.
+stub="$TEST_DIR/stub-bin"
+mkdir -p "$stub"
+printf '%s\n' '#!/bin/sh' "echo run >> \"$TEST_DIR/stub-runs\"" '[ "$2" = "--help" ] && exit 0' 'sleep 30' > "$stub/gitleaks"
+chmod +x "$stub/gitleaks"
+started=$(date +%s)
+OUT=$(cd "$guard" && PATH="$stub:$PATH" GIT_PILOT_GITLEAKS=1 GIT_PILOT_GITLEAKS_TIMEOUT=2 "$GIT_PILOT" commit-context 2>"$TEST_DIR/stderr" </dev/null)
+RC=$?
+ERR=$(cat "$TEST_DIR/stderr")
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hanging gitleaks does not fail commit-context" "$RC" "0"
+assert_contains "a hanging gitleaks is reported" "$ERR" "did not finish within 2s"
+if [ "$elapsed" -lt 20 ]; then pass "a hanging gitleaks is stopped by the timeout"; else fail "a hanging gitleaks is stopped by the timeout (${elapsed}s)"; fi
+printf '%s\n' '#!/bin/sh' "echo run >> \"$TEST_DIR/stub-fail-runs\"" '[ "$2" = "--help" ] && exit 0' 'exit 3' > "$stub/gitleaks"
+(cd "$guard" && PATH="$stub:$PATH" GIT_PILOT_GITLEAKS=1 "$GIT_PILOT" commit -m "feat: shop" --dry-run >/dev/null 2>&1 </dev/null)
+# One run to tell the version (--help), one scan: no second attempt.
+assert_eq "a failing gitleaks scans once" "$(grep -c run "$TEST_DIR/stub-fail-runs")" "2"
 git -C "$guard" rm -q --cached shop.txt
 
 git -C "$guard" mv .env .env.production

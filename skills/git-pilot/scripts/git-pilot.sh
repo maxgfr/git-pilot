@@ -106,9 +106,10 @@ Exit codes:
 Environment:
   GIT_PILOT_DIFF_BUDGET               Max diff characters printed (default 16000)
   GIT_PILOT_MAX_FILE_SIZE             Staged file size flagged as large, in bytes (default 5242880)
-  Both must be non-negative integers; any other value is an error.
   GIT_PILOT_GITLEAKS                  0 to skip gitleaks, which also scans staged changes when installed
+  GIT_PILOT_GITLEAKS_TIMEOUT          Seconds gitleaks may run before it is stopped (default 60)
   NO_COLOR                            Set to disable colors in diagnostics
+  The sizes and the timeout must be non-negative integers; any other value is an error.
 EOF
 }
 
@@ -159,6 +160,8 @@ git_path() {
 # True when Git prints path $1 quoted: it has a double quote, a backslash or a
 # control character (core.quotePath=false leaves other non-ASCII bytes alone).
 needs_quoting() {
+    # Bytes, as Git sees them: in a UTF-8 locale U+0085 would count as a control.
+    local LC_ALL=C
     case "$1" in
         *[\"\\]*|*[[:cntrl:]]*) return 0 ;;
     esac
@@ -173,12 +176,8 @@ quote_path() {
         printf '%s\n' "$path"
         return 0
     fi
-    path=${path//\\/\\\\}
-    path=${path//\"/\\\"}
-    path=${path//$'\t'/\\t}
-    path=${path//$'\n'/\\n}
-    path=${path//$'\r'/\\r}
-    printf '"%s"\n' "$path"
+    # Through the environment: awk -v would interpret the backslashes.
+    GIT_PILOT_PATH="$path" awk "$AWK_JSON_TO_GIT_PATH"'BEGIN { print git_quote(ENVIRON["GIT_PILOT_PATH"]) }'
 }
 
 # The raw diff that the safety checks read: the stored bytes, without textconv
@@ -311,10 +310,12 @@ int_setting() {
 # Read once in main, before any command runs.
 DIFF_BUDGET=16000       # Max chars of diff printed for the agent (~4K tokens)
 MAX_FILE_SIZE=5242880   # Staged file size flagged as large, in bytes
+GITLEAKS_TIMEOUT=60     # Seconds gitleaks may take before it is stopped
 
 load_settings() {
     DIFF_BUDGET=$(int_setting GIT_PILOT_DIFF_BUDGET "$DIFF_BUDGET") || exit "$EXIT_ERROR"
     MAX_FILE_SIZE=$(int_setting GIT_PILOT_MAX_FILE_SIZE "$MAX_FILE_SIZE") || exit "$EXIT_ERROR"
+    GITLEAKS_TIMEOUT=$(int_setting GIT_PILOT_GITLEAKS_TIMEOUT "$GITLEAKS_TIMEOUT") || exit "$EXIT_ERROR"
 }
 
 # Usage: truncate_diff <diff> <stat shown when the diff is truncated>
@@ -685,26 +686,89 @@ gitleaks_findings() {
     [ "${GIT_PILOT_GITLEAKS:-1}" != 0 ] || return 0
     command -v gitleaks >/dev/null 2>&1 || return 0
 
-    local report root
+    local report root scan=()
     report=$(mktemp)
     root=$(repo_root)
-    # "gitleaks git" since 8.19, "gitleaks protect" before.
-    if gitleaks git --staged --no-banner --redact --log-level error --exit-code 0 \
-            --report-format json --report-path "$report" "$root" >/dev/null 2>&1 ||
-        gitleaks protect --staged --no-banner --redact --log-level error --exit-code 0 \
-            --report-format json --report-path "$report" --source "$root" >/dev/null 2>&1; then
-        # Report entries carry the path as '"File": "<path>",' on a line of their own.
-        local path
-        sed -n 's/^[[:space:]]*"File":[[:space:]]*"\(.*\)",\{0,1\}$/\1/p' "$report" |
-            awk '{ gsub(/\\"/, "\""); gsub(/\\\\/, "\\"); print }' |
-            while IFS= read -r path; do
-                printf 'secret-content: %s\n' "$(quote_path "$path")"
-            done
+    # "gitleaks git" since 8.19, "gitleaks protect" before: pick one, so that a
+    # failure is not paid twice.
+    if gitleaks git --help >/dev/null 2>&1; then
+        scan=(gitleaks git --staged "$root")
     else
-        log_warn "gitleaks is installed but did not run; only the built-in secret patterns were checked."
+        scan=(gitleaks protect --staged --source "$root")
+    fi
+    if run_with_timeout "$GITLEAKS_TIMEOUT" "${scan[@]}" --no-banner --redact --log-level error \
+            --exit-code 0 --report-format json --report-path "$report" >/dev/null 2>&1; then
+        # Report entries carry the path as '"File": "<JSON string>",' on a line of
+        # their own; it is decoded, then printed quoted the way Git does.
+        sed -n 's/^[[:space:]]*"File":[[:space:]]*"\(.*\)",\{0,1\}$/\1/p' "$report" |
+            awk "$AWK_JSON_TO_GIT_PATH"'{ print "secret-content: " git_quote(json_decode($0)) }'
+    else
+        log_warn "gitleaks is installed but did not finish within ${GITLEAKS_TIMEOUT}s or failed (check its configuration); only the built-in secret patterns were checked."
     fi
     rm -f "$report"
 }
+
+# Usage: run_with_timeout <seconds> <command>...
+# Run the command, stopping it after the given time (no coreutils timeout on macOS).
+run_with_timeout() {
+    local seconds="$1" pid watcher rc=0
+    shift
+    "$@" &
+    pid=$!
+    ( sleep "$seconds" && kill "$pid" 2>/dev/null ) &
+    watcher=$!
+    wait "$pid" || rc=$?
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    return "$rc"
+}
+
+# awk functions: json_decode turns the inside of a JSON string into its bytes,
+# git_quote prints a path the way Git does (see quote_path). Run under LC_ALL=C.
+AWK_JSON_TO_GIT_PATH='
+function utf8(code) {
+    if (code < 128) return sprintf("%c", code)
+    if (code < 2048) return sprintf("%c%c", 192 + int(code / 64), 128 + code % 64)
+    return sprintf("%c%c%c", 224 + int(code / 4096), 128 + int(code / 64) % 64, 128 + code % 64)
+}
+function json_decode(s,   out, i, c, n, hex) {
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c != "\\") { out = out c; continue }
+        c = substr(s, ++i, 1)
+        if (c == "n") out = out "\n"
+        else if (c == "t") out = out "\t"
+        else if (c == "r") out = out "\r"
+        else if (c == "b") out = out "\b"
+        else if (c == "f") out = out "\f"
+        else if (c == "u") {
+            hex = tolower(substr(s, i + 1, 4)); i += 4; n = 0
+            for (c = 1; c <= 4; c++) n = n * 16 + index("0123456789abcdef", substr(hex, c, 1)) - 1
+            out = out utf8(n)
+        } else out = out c
+    }
+    return out
+}
+function git_quote(s,   out, i, c, code, quoted) {
+    out = ""; quoted = 0
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1); code = ord[c]
+        if (c == "\"" || c == "\\") { out = out "\\" c; quoted = 1 }
+        else if (code == 7) { out = out "\\a"; quoted = 1 }
+        else if (code == 8) { out = out "\\b"; quoted = 1 }
+        else if (code == 9) { out = out "\\t"; quoted = 1 }
+        else if (code == 10) { out = out "\\n"; quoted = 1 }
+        else if (code == 11) { out = out "\\v"; quoted = 1 }
+        else if (code == 12) { out = out "\\f"; quoted = 1 }
+        else if (code == 13) { out = out "\\r"; quoted = 1 }
+        else if (code < 32 || code == 127) { out = out sprintf("\\%03o", code); quoted = 1 }
+        else out = out c
+    }
+    return quoted ? "\"" out "\"" : out
+}
+BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+'
 
 # Print a "Conventions:" section describing the repository's commit style.
 detect_conventions() {
