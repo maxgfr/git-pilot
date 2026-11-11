@@ -862,11 +862,11 @@ run_with_timeout() {
     # Polled from here rather than watched by a second process: a watcher's
     # sleep could outlive a command that ends at once.
     while kill -0 "$pid" 2>/dev/null; do
-        if [ "$ticks" -ge $((seconds * 10)) ]; then
+        if [ "$ticks" -ge $((seconds * 50)) ]; then
             kill "$pid" 2>/dev/null || true
             break
         fi
-        sleep 0.1
+        sleep 0.02
         ticks=$((ticks + 1))
     done
     wait "$pid" || rc=$?
