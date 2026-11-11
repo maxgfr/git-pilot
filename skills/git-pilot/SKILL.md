@@ -138,7 +138,10 @@ unrelated work:
    `scripts/git-pilot.sh take <ours|theirs|both> <file>...`. A conflicted
    file without markers (binary file, or deleted on one side) gets that
    side's whole version, which deletes the file when that side deleted it;
-   `both` exits `1` on such a file. A file that is not in conflict is refused.
+   `both` exits `1` on such a file. A file that is not in conflict is refused,
+   and so is one whose markers do not match Git's conflicts (an unterminated
+   hunk, a `=======` line inside a side, a documented example of markers):
+   nothing is changed, resolve it by hand.
 6. Finish: for a merge, commit (see **Commit**, the message can be the
    default `Merge branch '…'`); for a rebase, continue below; for a
    cherry-pick or a revert, run the `--continue` command that

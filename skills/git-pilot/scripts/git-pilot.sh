@@ -477,7 +477,7 @@ rewrite_with_awk() {
     tmp=$(mktemp)
     if ! awk -v side="$side" "$program" < "$file" > "$tmp"; then
         rm -f "$tmp"
-        die "Could not rewrite: $file"
+        die "Could not rewrite $file: left as it was."
     fi
     cat "$tmp" > "$file"
     rm -f "$tmp"
@@ -487,15 +487,50 @@ rewrite_with_awk() {
 # A hunk is "<<<<<<< ours ||||||| base ======= theirs >>>>>>>". Each marker is
 # matched exactly as Git writes it, and only where it can occur: a line such as
 # "==========" (a heading underline) or "=======" inside their side is content.
-resolve_keep() {
-    rewrite_with_awk "$1" '
+#
+# With side "count", print the number of hunks instead, or -1 when the file
+# cannot be resolved safely: an unterminated hunk, or a second "=======" or a
+# nested "<<<<<<<" in one hunk (a separator line in the content makes the split
+# ambiguous). The same program does both, so the check matches the rewrite.
+AWK_HUNKS='
     BEGIN { keep_ours = (side != "theirs"); keep_theirs = (side != "ours") }
-    state == 0 && /^<<<<<<<( |\r?$)/ { state = 1; next }
+    state == 1 && /^<<<<<<<( |\r?$)/ { bad = 1 }
+    state == 3 && /^=======\r?$/ { bad = 1 }
+    state == 0 && /^<<<<<<<( |\r?$)/ { state = 1; hunks++; next }
     state == 1 && /^\|\|\|\|\|\|\|( |\r?$)/ { state = 2; next }
     (state == 1 || state == 2) && /^=======\r?$/ { state = 3; next }
     state == 3 && /^>>>>>>>( |\r?$)/ { state = 0; next }
+    side == "count" { next }
     state == 0 || (state == 1 && keep_ours) || (state == 3 && keep_theirs) { print }
-    ' "$2"
+    END {
+        if (state) bad = 1
+        if (side == "count") print (bad ? -1 : hunks + 0)
+        else if (bad) exit 3
+    }'
+
+resolve_keep() {
+    rewrite_with_awk "$1" "$AWK_HUNKS" "$2"
+}
+
+# Number of conflict hunks in file $1, or -1 when it cannot be resolved safely.
+count_hunks() {
+    awk -v side=count "$AWK_HUNKS" < "$1"
+}
+
+# Number of conflicts Git finds when it merges the index stages of unmerged
+# file $1 again. Fails when that cannot be told (merge-file error).
+git_conflict_count() {
+    local dir blob stage rest rc=0
+    dir=$(mktemp -d)
+    : > "$dir/1"; : > "$dir/2"; : > "$dir/3"
+    # "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>".
+    while read -r _ blob stage rest; do
+        git cat-file blob "$blob" > "$dir/$stage" || { rm -rf "$dir"; return 1; }
+    done < <(git_path ls-files -u -- "$1")
+    git merge-file -p "$dir/2" "$dir/1" "$dir/3" > /dev/null 2>&1 || rc=$?
+    rm -rf "$dir"
+    [ "$rc" -lt 127 ] || return 1
+    printf '%s\n' "$rc"
 }
 
 resolve_keep_ours() { resolve_keep "$1" ours; }
@@ -1120,10 +1155,14 @@ cmd_take() {
     # Check every file before changing any: a file that is not in conflict
     # would otherwise be staged as it is and reported as resolved.
     # A refusal therefore leaves every file as it was.
-    local args=("$@") files=() whole=() arg file i leftover="" name
+    local args=("$@") files=() whole=() arg file i leftover="" name hunks expected
+    local by_hand="resolve it by hand, then run mark-resolved"
     for arg in "$@"; do
         file=$(resolve_path "$arg")
-        [ ! -d "$file" ] || die "take resolves files, not directories: $arg"
+        # A symbolic link in conflict is resolved as a whole, wherever it points.
+        if [ -d "$file" ] && [ ! -L "$file" ]; then
+            die "take resolves files, not directories: $arg"
+        fi
         if ! is_unmerged "$file"; then
             [ -f "$file" ] || die "File not found: $arg"
             # Already staged but with markers left in it: only markers that a
@@ -1134,15 +1173,27 @@ cmd_take() {
             if [ -z "$name" ] || ! printf '%s\n' "$leftover" | grep -Fxq -- "$name"; then
                 die "Not in conflict, nothing to resolve: $arg"
             fi
+            [ "$(count_hunks "$file")" -gt 0 ] ||
+                die "The conflict markers in $arg are incomplete or ambiguous: $by_hand."
             whole+=(false)
-        elif ! has_both_sides "$file" || [ ! -f "$file" ] || ! file_has_markers "$file"; then
-            # Deleted on one side, binary, or otherwise without markers to edit:
-            # one side's version is taken as a whole. Markers in the file are
-            # then content (a fixture), not something to resolve.
+        elif ! has_both_sides "$file" || [ ! -f "$file" ] || [ -L "$file" ] || ! file_has_markers "$file"; then
+            # Deleted on one side, a symbolic link, binary, or otherwise without
+            # markers to edit: one side's version is taken as a whole. Markers in
+            # the file are then content (a fixture), not something to resolve.
             [ "$strategy" != both ] ||
-                die "Cannot keep both sides of $arg: it has no conflict hunks (binary file, or deleted on one side). Resolve it manually."
+                die "Cannot keep both sides of $arg: it has no conflict hunks (binary file, symbolic link, or deleted on one side). Resolve it manually."
             whole+=(true)
         else
+            # Only rewrite what Git itself would call conflicts: an unterminated
+            # or ambiguous hunk, or marker lines that are content (a documented
+            # example), would make the rewrite drop lines.
+            hunks=$(count_hunks "$file")
+            [ "$hunks" -gt 0 ] ||
+                die "The conflict markers in $arg are incomplete or ambiguous: $by_hand."
+            expected=$(git_conflict_count "$file") ||
+                die "Could not check the conflicts of $arg against Git: $by_hand."
+            [ "$hunks" = "$expected" ] ||
+                die "$arg has $hunks marker blocks but $expected conflicts (some markers are content, or were edited): $by_hand."
             whole+=(false)
         fi
         files+=("$file")

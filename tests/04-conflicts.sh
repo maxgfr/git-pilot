@@ -77,6 +77,65 @@ git -C "$ul" checkout -q -m README.md
 run "$ul" take theirs README.md
 assert_eq "take theirs keeps a whole side with a heading underline" "$(cat "$ul/README.md")" $'Theirs title\n==========\ntheirs body'
 
+# take only rewrites what Git calls conflicts; anything else is refused untouched.
+c=$(conflicted_repo unterminated)
+printf '%s\n' "line 1" "<<<<<<< HEAD" "ours" "=======" "theirs" "line 3" > "$c/conflict.txt"
+cp "$c/conflict.txt" "$TEST_DIR/unterminated.txt"
+run "$c" take theirs conflict.txt
+assert_eq "take refuses an unterminated hunk" "$RC" "1"
+assert_eq "a refused hunk leaves the file as it was" "$(cat "$c/conflict.txt")" "$(cat "$TEST_DIR/unterminated.txt")"
+
+sep=$(new_repo separator-in-ours)
+printf '%s\n' "a" "b" "c" > "$sep/s.txt"
+git -C "$sep" add s.txt
+git -C "$sep" commit -q -m "feat: add s"
+git -C "$sep" checkout -q -b other
+printf '%s\n' "a" "theirs" "c" > "$sep/s.txt"
+git -C "$sep" commit -q -am "feat: their s"
+git -C "$sep" checkout -q main
+printf '%s\n' "a" "ours 1" "=======" "ours 2" "c" > "$sep/s.txt"
+git -C "$sep" commit -q -am "feat: our s"
+git -C "$sep" merge -q other >/dev/null 2>&1 || true
+run "$sep" take ours s.txt
+assert_eq "take refuses a hunk with a separator line in its content" "$RC" "1"
+assert_contains "the refusal says to resolve by hand" "$ERR" "resolve it by hand"
+
+doc=$(new_repo documented-in-conflict)
+printf '%s\n' "Example:" "<<<<<<< HEAD" "mine" "=======" "yours" ">>>>>>> branch" "" "Value: base" > "$doc/guide.md"
+git -C "$doc" add guide.md
+git -C "$doc" commit -q -m "docs: add guide"
+git -C "$doc" checkout -q -b other
+sed -i.bak 's/Value: base/Value: theirs/' "$doc/guide.md" && rm "$doc/guide.md.bak"
+git -C "$doc" commit -q -am "docs: their value"
+git -C "$doc" checkout -q main
+sed -i.bak 's/Value: base/Value: ours/' "$doc/guide.md" && rm "$doc/guide.md.bak"
+git -C "$doc" commit -q -am "docs: our value"
+git -C "$doc" merge -q other >/dev/null 2>&1 || true
+run "$doc" take theirs guide.md
+assert_eq "take refuses a conflicted file that also documents markers" "$RC" "1"
+assert_contains "the refusal counts the marker blocks" "$ERR" "2 marker blocks but 1 conflicts"
+
+# A conflicted symbolic link that points to a directory is taken as a whole.
+ln_repo=$(new_repo symlink-dir)
+mkdir -p "$ln_repo/a" "$ln_repo/b"
+printf '%s\n' "x" > "$ln_repo/a/x.txt"
+printf '%s\n' "y" > "$ln_repo/b/y.txt"
+ln -s a "$ln_repo/current"
+git -C "$ln_repo" add -A
+git -C "$ln_repo" commit -q -m "feat: add link"
+git -C "$ln_repo" checkout -q -b other
+rm "$ln_repo/current"; ln -s b "$ln_repo/current"
+git -C "$ln_repo" commit -q -am "feat: point at b"
+git -C "$ln_repo" checkout -q main
+mkdir -p "$ln_repo/c"; printf '%s\n' "z" > "$ln_repo/c/z.txt"
+rm "$ln_repo/current"; ln -s c "$ln_repo/current"
+git -C "$ln_repo" add -A
+git -C "$ln_repo" commit -q -m "feat: point at c"
+git -C "$ln_repo" merge -q other >/dev/null 2>&1 || true
+run "$ln_repo" take theirs current
+assert_eq "take resolves a symbolic link to a directory" "$RC" "0"
+assert_eq "the link takes their target" "$(readlink "$ln_repo/current")" "b"
+
 crlf=$(new_repo crlf)
 printf 'one\r\nbase\r\nthree\r\n' > "$crlf/win.txt"
 git -C "$crlf" add win.txt
