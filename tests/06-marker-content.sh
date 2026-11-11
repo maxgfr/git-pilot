@@ -45,6 +45,20 @@ run "$bf" commit-context
 assert_eq "commit-context survives a broken textconv" "$RC" "0"
 assert_contains "commit-context still flags the key" "$OUT" "secret-content: k.txt"
 
+# A diff that git cannot produce at all (a missing object) stops the checks.
+co=$(new_repo corrupt)
+printf '%s\n' "<<<<<<< HEAD" "a" "=======" "b" ">>>>>>> other" > "$co/z.txt"
+printf '%s\n' "unique content for the corrupt object test" > "$co/gone.txt"
+git -C "$co" add -A
+blob=$(git -C "$co" rev-parse :gone.txt)
+# Without the working copy either, git cannot rebuild the blob from the file.
+rm -f "$co/.git/objects/${blob:0:2}/${blob:2}" "$co/gone.txt"
+run "$co" commit -m "feat: corrupt" --dry-run
+assert_eq "commit fails when the staged diff cannot be read" "$RC" "1"
+run "$co" conflicts
+assert_eq "conflicts fails when the diff cannot be read" "$RC" "1"
+assert_contains "the failure is explained" "$ERR" "Could not scan the changes for conflict markers"
+
 printf '%s\n' "<<<<<<< HEAD" "left over" >> "$fx/fixture.txt"
 run "$fx" conflicts
 assert_eq "a new marker line in the fixture is a conflict" "$OUT" "fixture.txt"

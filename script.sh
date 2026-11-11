@@ -222,10 +222,9 @@ unmerged_files() {
 
 # Sorted, unique "path<TAB>marker line" pairs, from the index and the working
 # tree, for conflict marker lines that commit (or tree) $1 does not have.
+# Streamed: with pipefail, a failing git diff still fails the whole pipeline.
 marker_lines_against() {
-    local diffs
-    diffs=$(scan_diff --cached "$1" -- && scan_diff "$1" --) || return 1
-    printf '%s\n' "$diffs" | awk "$AWK_HEADER_PATH"'
+    { scan_diff --cached "$1" -- && scan_diff "$1" --; } | awk "$AWK_HEADER_PATH"'
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
@@ -690,9 +689,8 @@ staged_findings_all() {
     local token_pattern
     token_pattern=$(IFS='|'; printf '%s' "${token_patterns[*]}")
     # File headers only count outside hunks (an added "++ x" line reads "+++ x").
-    local diff
-    diff=$(scan_diff --cached --diff-filter=ACMR) || return 1
-    printf '%s\n' "$diff" |
+    # Streamed: with pipefail, a failing git diff still fails the pipeline.
+    scan_diff --cached --diff-filter=ACMR |
         awk "$AWK_HEADER_PATH"'
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
