@@ -757,6 +757,41 @@ assert_eq "rebase start works after a rejected first push" "$RC" "0"
 run "$local_clone" push
 assert_eq "push succeeds after that rebase" "$RC" "0"
 
+# A tag named like the new branch does not make the first push ambiguous.
+git -C "$local_clone" checkout -q -b tagged main
+git -C "$local_clone" tag tagged
+git -C "$local_clone" commit -q --allow-empty -m "feat: tagged work"
+run "$local_clone" push
+assert_eq "first push of a branch named like a tag succeeds" "$RC" "0"
+assert_eq "the branch, not the tag, was pushed" "$(git -C "$remote" rev-parse refs/heads/tagged)" "$(git -C "$local_clone" rev-parse HEAD)"
+assert_eq "its upstream is set" "$(git -C "$local_clone" rev-parse --abbrev-ref 'tagged@{upstream}')" "origin/tagged"
+git -C "$local_clone" checkout -q main
+
+# In a single-branch clone, a rejected first push still sets up the rebase.
+single="$TEST_DIR/single"
+git clone -q --single-branch --branch main "$remote" "$single" 2>/dev/null
+git -C "$single" checkout -q -b shared-topic
+printf '%s\n' "single" > "$single/single-topic.txt"
+git -C "$single" add single-topic.txt
+git -C "$single" commit -q -m "feat: single topic"
+run "$single" push
+assert_eq "rejected first push in a single-branch clone exits 4" "$RC" "4"
+run "$single" rebase start
+assert_eq "rebase start works in that single-branch clone" "$RC" "0"
+run "$single" push
+assert_eq "push succeeds after that rebase" "$RC" "0"
+
+# With push.default=matching, another branch being rejected is not exit 4.
+git -C "$single" checkout -q main
+git -C "$single" reset -q --hard HEAD~1 2>/dev/null || true
+git -C "$single" commit -q --allow-empty -m "feat: diverged main"
+git -C "$single" checkout -q shared-topic
+git -C "$single" commit -q --allow-empty -m "feat: topic after rebase"
+git -C "$single" config push.default matching
+run "$single" push
+assert_eq "a rejection of another branch exits 1, not 4" "$RC" "1"
+assert_eq "the current branch was still pushed" "$(git -C "$remote" rev-parse refs/heads/shared-topic)" "$(git -C "$single" rev-parse HEAD)"
+
 # A failing pre-push hook runs once, not twice.
 git -C "$local_clone" commit -q --allow-empty -m "feat: hooked"
 hooks="$TEST_DIR/hooks"

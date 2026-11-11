@@ -901,7 +901,8 @@ cmd_push() {
     if [ -z "$(git config --get "branch.$branch.merge" 2>/dev/null || true)" ]; then
         remote=$(default_push_remote "$branch") ||
             die "The branch has no upstream and there is no single remote to choose. Run 'git push -u <remote> $branch' once."
-        args=(-u "$remote" "$branch")
+        # The full ref name: a tag with the same name would make it ambiguous.
+        args=(-u "$remote" "refs/heads/$branch")
         log_info "No upstream yet: pushing to $remote and tracking $remote/$branch."
     fi
 
@@ -915,23 +916,31 @@ cmd_push() {
     # behind its remote is worth a rebase. Anything else (authentication,
     # network, a hook or a protected branch refusing the push) is a plain error.
     # --no-verify: the pre-push hook already ran (and maybe failed) above.
+    # Porcelain lines are "<flag><TAB><from>:<to><TAB><summary>". Only the
+    # current branch counts: with push.default=matching, another branch can be
+    # the one rejected.
     local verdict
     verdict=$(git push --dry-run --porcelain --no-verify ${args[@]+"${args[@]}"} 2>/dev/null || true)
-    if printf '%s\n' "$verdict" | grep -Eq '^!.*\[rejected\] \((fetch first|non-fast-forward)\)'; then
+    if printf '%s\n' "$verdict" | awk -F'\t' -v src="refs/heads/$branch:" '
+        $1 == "!" && index($2, src) == 1 && $3 ~ /\[rejected\] \((fetch first|non-fast-forward)\)/ { found = 1 }
+        END { exit !found }'; then
         # A first push to a branch that already exists remotely set no upstream,
-        # and 'rebase start' needs one: track the remote branch now.
+        # and 'rebase start' needs one. Configured directly: a single-branch or
+        # shallow clone has no remote-tracking ref to point at.
         if [ -n "$remote" ]; then
-            if git fetch -q "$remote" "$branch" >&2 &&
-                git branch -q --set-upstream-to="$remote/$branch" "$branch" >&2; then
-                log_info "Now tracking $remote/$branch."
-            else
-                die "Push rejected: $remote/$branch has commits you do not have, and it could not be tracked. Run 'git branch --set-upstream-to=$remote/$branch', then 'rebase start'."
+            if ! git config "branch.$branch.remote" "$remote" ||
+                ! git config "branch.$branch.merge" "refs/heads/$branch"; then
+                die "Push rejected, and the upstream $remote/$branch could not be configured."
             fi
+            # Best effort, so that @{upstream} resolves right away; 'rebase start'
+            # fetches the branch itself if this fails.
+            git fetch -q "$remote" "+refs/heads/$branch:refs/remotes/$remote/$branch" >/dev/null 2>&1 || true
+            log_info "Now tracking $remote/$branch."
         fi
         log_error "Push rejected: the remote has commits you do not have. Run 'rebase start', then 'push' again."
         exit "$EXIT_PUSH_REJECTED"
     fi
-    die "git push failed for another reason than new commits on the remote (see git's message above)."
+    die "git push failed (see git's message above), and not because the current branch is behind its remote: a rebase will not help."
 }
 
 cmd_commit() {
