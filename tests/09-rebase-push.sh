@@ -130,6 +130,7 @@ git -C "$single" add single-topic.txt
 git -C "$single" commit -q -m "feat: single topic"
 run "$single" push
 assert_eq "rejected first push in a single-branch clone exits 4" "$RC" "4"
+assert_contains "the branch is added to what the single-branch clone fetches" "$(git -C "$single" config --get-all remote.origin.fetch)" "refs/heads/shared-topic"
 run "$single" rebase start
 assert_eq "rebase start works in that single-branch clone" "$RC" "0"
 run "$single" push
@@ -143,8 +144,8 @@ git -C "$single" checkout -q shared-topic
 git -C "$single" commit -q --allow-empty -m "feat: topic after rebase"
 git -C "$single" config push.default matching
 run "$single" push
-assert_eq "a rejection of another branch only is a success, not 4" "$RC" "0"
-assert_contains "the rejection of the other branch is reported" "$ERR" "other branches were rejected"
+assert_eq "a rejection of another branch only exits 1, not 4" "$RC" "1"
+assert_contains "the message says the current branch is on the remote" "$ERR" "already on the remote"
 assert_eq "the current branch was still pushed" "$(git -C "$remote" rev-parse refs/heads/shared-topic)" "$(git -C "$single" rev-parse HEAD)"
 
 # A failing pre-push hook runs once, not twice.

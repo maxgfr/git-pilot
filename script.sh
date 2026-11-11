@@ -797,20 +797,21 @@ gitleaks_findings() {
 # Usage: run_with_timeout <seconds> <command>...
 # Run the command, stopping it after the given time (no coreutils timeout on macOS).
 run_with_timeout() {
-    local seconds="$1" pid watcher rc=0
+    local seconds="$1" pid ticks=0 rc=0
     shift
     "$@" &
     pid=$!
-    # The watcher stops its own sleep when it is stopped, so none is left behind.
-    (
-        sleep "$seconds" &
-        trap 'kill $! 2>/dev/null; exit 0' TERM
-        wait $! && kill "$pid" 2>/dev/null
-    ) &
-    watcher=$!
+    # Polled from here rather than watched by a second process: a watcher's
+    # sleep could outlive a command that ends at once.
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$ticks" -ge $((seconds * 10)) ]; then
+            kill "$pid" 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+        ticks=$((ticks + 1))
+    done
     wait "$pid" || rc=$?
-    kill "$watcher" 2>/dev/null || true
-    wait "$watcher" 2>/dev/null || true
     return "$rc"
 }
 
@@ -1214,26 +1215,30 @@ cmd_push() {
                 ! git config "branch.$branch.merge" "refs/heads/$branch"; then
                 die "Push rejected, and the upstream $remote/$branch could not be configured."
             fi
-            # Best effort, for the remote-tracking ref (status, branch-context).
-            # 'rebase start' fetches the branch itself, so a failure here does
-            # not matter; in a single-branch clone 'git fetch' will not keep
-            # that ref up to date, and status shows no upstream line.
+            # A single-branch clone only fetches its one branch, and older Git
+            # (2.34) then fails 'git pull' with "no such ref was fetched": add
+            # this branch to what the remote fetches, as 'git remote
+            # set-branches --add' does.
+            if ! git config --get-all "remote.$remote.fetch" 2>/dev/null | awk -v ref="refs/heads/$branch" '
+                    { src = $0; sub(/^\+/, "", src); sub(/:.*/, "", src) }
+                    src == "refs/heads/*" || src == ref { found = 1 } END { exit !found }'; then
+                git remote set-branches --add "$remote" "$branch" ||
+                    die "Push rejected, and $remote/$branch could not be added to the branches $remote fetches."
+            fi
+            # Best effort, for the remote-tracking ref (status, branch-context);
+            # 'rebase start' fetches the branch itself.
             git fetch -q "$remote" "+refs/heads/$branch:refs/remotes/$remote/$branch" >/dev/null 2>&1 || true
             log_info "Now tracking $remote/$branch."
         fi
         log_error "Push rejected: the remote has commits you do not have. Run 'rebase start', then 'push' again."
         exit "$EXIT_PUSH_REJECTED"
     fi
-    # push.default=matching pushes other branches too: when the current branch
-    # is on the remote and only another branch was rejected, this command did
-    # its job. Anything else (a pre-push hook, a rejected tag) stays a failure.
-    if [ "$(git config --get push.default 2>/dev/null || true)" = matching ] &&
-        printf '%s\n' "$verdict" | awk -F'\t' -v src="refs/heads/$branch:" '
-            $1 == "=" && index($2, src) == 1 { current = 1 }
-            $1 == "!" && index($2, "refs/heads/") == 1 && index($2, src) != 1 { other = 1 }
-            END { exit !(current && other) }'; then
-        log_warn "The current branch is pushed, but other branches were rejected (push.default=matching); see git's message above."
-        return 0
+    # Still a failure: a hook may have refused the push, and nothing here can
+    # tell that apart from another branch being rejected. Say so when the
+    # current branch is already on the remote (push.default=matching).
+    if printf '%s\n' "$verdict" | awk -F'\t' -v src="refs/heads/$branch:" '
+            $1 == "=" && index($2, src) == 1 { found = 1 } END { exit !found }'; then
+        die "git push failed (see git's message above), although the current branch is already on the remote: another ref or a hook refused the push."
     fi
     die "git push failed (see git's message above), and not because the current branch is behind its remote: a rebase will not help."
 }

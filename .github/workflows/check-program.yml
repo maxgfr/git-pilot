@@ -14,7 +14,8 @@ jobs:
     name: Tests (${{ matrix.os }})
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        # ubuntu-22.04 ships Git 2.34, the oldest Git the CLI is tested against.
+        os: [macos-latest, ubuntu-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
