@@ -20,7 +20,7 @@ cut() { LC_ALL=C command cut "$@"; }
 sort() { LC_ALL=C command sort "$@"; }
 comm() { LC_ALL=C command comm "$@"; }
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 # Exit codes
 EXIT_ERROR=1
