@@ -235,9 +235,10 @@ has_both_sides() {
     has_stage "$1" 2 && has_stage "$1" 3
 }
 
-# The file is read from stdin so its name is never parsed as a grep option.
+# The file is read from stdin so that awk never parses its name as an
+# assignment. Markers are matched as Git writes them, with LF or CRLF endings.
 file_has_markers() {
-    grep -Eq '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |$)' < "$1"
+    awk '/^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { found = 1; exit } END { exit !found }' < "$1"
 }
 
 # Exit with EXIT_CONFLICTS when conflicts remain, listing them on stderr.
@@ -429,10 +430,10 @@ gather_merge_context() {
 # Rewrite a file in place, keeping its mode. The file is read from stdin:
 # as an operand, awk would treat a name like "key=value.txt" as an assignment.
 rewrite_with_awk() {
-    local file="$1" program="$2"
+    local file="$1" program="$2" side="${3:-}"
     local tmp
     tmp=$(mktemp)
-    if ! awk "$program" < "$file" > "$tmp"; then
+    if ! awk -v side="$side" "$program" < "$file" > "$tmp"; then
         rm -f "$tmp"
         die "Could not rewrite: $file"
     fi
@@ -440,35 +441,24 @@ rewrite_with_awk() {
     rm -f "$tmp"
 }
 
-resolve_keep_both() {
+# Resolve every conflict hunk of file $1, keeping side $2 (ours, theirs or both).
+# A hunk is "<<<<<<< ours ||||||| base ======= theirs >>>>>>>". Each marker is
+# matched exactly as Git writes it, and only where it can occur: a line such as
+# "==========" (a heading underline) or "=======" inside their side is content.
+resolve_keep() {
     rewrite_with_awk "$1" '
-    /^<<<<<<</ { in_conflict=1; next }
-    in_conflict && /^\|\|\|\|\|\|\|/ { skip_base=1; next }
-    in_conflict && /^=======/ { skip_base=0; next }
-    in_conflict && /^>>>>>>>/ { in_conflict=0; skip_base=0; next }
-    !skip_base { print }
-    '
+    BEGIN { keep_ours = (side != "theirs"); keep_theirs = (side != "ours") }
+    state == 0 && /^<<<<<<<( |\r?$)/ { state = 1; next }
+    state == 1 && /^\|\|\|\|\|\|\|( |\r?$)/ { state = 2; next }
+    (state == 1 || state == 2) && /^=======\r?$/ { state = 3; next }
+    state == 3 && /^>>>>>>>( |\r?$)/ { state = 0; next }
+    state == 0 || (state == 1 && keep_ours) || (state == 3 && keep_theirs) { print }
+    ' "$2"
 }
 
-resolve_keep_ours() {
-    rewrite_with_awk "$1" '
-    /^<<<<<<</ { in_conflict=1; keep=1; next }
-    in_conflict && /^\|\|\|\|\|\|\|/ { keep=0; next }
-    in_conflict && /^=======/ { keep=0; next }
-    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
-    !in_conflict || keep { print }
-    '
-}
-
-resolve_keep_theirs() {
-    rewrite_with_awk "$1" '
-    /^<<<<<<</ { in_conflict=1; keep=0; next }
-    in_conflict && /^\|\|\|\|\|\|\|/ { next }
-    in_conflict && /^=======/ { keep=1; next }
-    in_conflict && /^>>>>>>>/ { in_conflict=0; keep=0; next }
-    !in_conflict || keep { print }
-    '
-}
+resolve_keep_ours() { resolve_keep "$1" ours; }
+resolve_keep_theirs() { resolve_keep "$1" theirs; }
+resolve_keep_both() { resolve_keep "$1" both; }
 
 # Resolve and stage an unmerged file that has no conflict markers (binary file,
 # or deleted on one side) by taking one side's whole version. When that side

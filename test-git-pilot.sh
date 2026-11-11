@@ -292,6 +292,41 @@ assert_eq "a refused directory leaves the conflict unstaged" "$(git -C "$c" diff
 run "$c" mark-resolved missing.txt
 assert_eq "mark-resolved on an unknown path exits 1" "$RC" "1"
 
+# Lines that only look like markers are content: a heading underline in a hunk
+# must not split it. CRLF files keep working.
+ul=$(new_repo underline)
+printf '%s\n' "Title" "==========" "body" > "$ul/README.md"
+git -C "$ul" add README.md
+git -C "$ul" commit -q -m "docs: add readme"
+git -C "$ul" checkout -q -b other
+printf '%s\n' "Theirs title" "==========" "theirs body" > "$ul/README.md"
+git -C "$ul" commit -q -am "docs: their readme"
+git -C "$ul" checkout -q main
+printf '%s\n' "Ours title" "==========" "ours body" > "$ul/README.md"
+git -C "$ul" commit -q -am "docs: our readme"
+git -C "$ul" merge -q other >/dev/null 2>&1 || true
+cp "$ul/README.md" "$TEST_DIR/underline-conflict.md"
+run "$ul" take ours README.md
+assert_eq "take ours keeps a whole side with a heading underline" "$(cat "$ul/README.md")" $'Ours title\n==========\nours body'
+cp "$TEST_DIR/underline-conflict.md" "$ul/README.md"
+git -C "$ul" checkout -q -m README.md
+run "$ul" take theirs README.md
+assert_eq "take theirs keeps a whole side with a heading underline" "$(cat "$ul/README.md")" $'Theirs title\n==========\ntheirs body'
+
+crlf=$(new_repo crlf)
+printf 'one\r\nbase\r\nthree\r\n' > "$crlf/win.txt"
+git -C "$crlf" add win.txt
+git -C "$crlf" commit -q -m "feat: add windows file"
+git -C "$crlf" checkout -q -b other
+printf 'one\r\ntheirs\r\nthree\r\n' > "$crlf/win.txt"
+git -C "$crlf" commit -q -am "feat: their line"
+git -C "$crlf" checkout -q main
+printf 'one\r\nours\r\nthree\r\n' > "$crlf/win.txt"
+git -C "$crlf" commit -q -am "feat: our line"
+git -C "$crlf" merge -q other >/dev/null 2>&1 || true
+run "$crlf" take theirs win.txt
+assert_eq "take resolves a CRLF file" "$(od -An -c "$crlf/win.txt" | tr -d ' \n')" 'one\r\ntheirs\r\nthree\r\n'
+
 # Conflicts without markers: binary files, and files deleted on one side.
 c=$(binary_conflicted_repo binary-theirs)
 run "$c" take theirs blob.bin
