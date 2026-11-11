@@ -490,13 +490,15 @@ rewrite_with_awk() {
 # "==========" (a heading underline) or "=======" inside their side is content.
 #
 # With side "count", print the number of hunks instead, or -1 when the file
-# cannot be resolved safely: an unterminated hunk, or a second "=======" or a
-# nested "<<<<<<<" in one hunk (a separator line in the content makes the split
-# ambiguous). The same program does both, so the check matches the rewrite.
+# cannot be resolved safely: an unterminated hunk, a second "=======" or a
+# nested "<<<<<<<" in one hunk, or a ">>>>>>>" or "|||||||" outside any hunk
+# (a marker-shaped line in the content makes the split ambiguous). The same
+# program does both, so the check matches the rewrite.
 AWK_HUNKS='
     BEGIN { keep_ours = (side != "theirs"); keep_theirs = (side != "ours") }
     state == 1 && /^<<<<<<<( |\r?$)/ { bad = 1 }
     state == 3 && /^=======\r?$/ { bad = 1 }
+    state == 0 && /^(>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { bad = 1 }
     state == 0 && /^<<<<<<<( |\r?$)/ { state = 1; hunks++; next }
     state == 1 && /^\|\|\|\|\|\|\|( |\r?$)/ { state = 2; next }
     (state == 1 || state == 2) && /^=======\r?$/ { state = 3; next }
@@ -518,20 +520,38 @@ count_hunks() {
     awk -v side=count "$AWK_HUNKS" < "$1"
 }
 
-# Number of conflicts Git finds when it merges the index stages of unmerged
-# file $1 again. Fails when that cannot be told (merge-file error).
-git_conflict_count() {
-    local dir blob stage rest rc=0
-    dir=$(mktemp -d)
-    : > "$dir/1"; : > "$dir/2"; : > "$dir/3"
+# True when Git object $1 (a blob id, or "<commit>:<path>") has a line shaped
+# like a conflict marker. Such lines in a version of the file are content (a
+# merge fixture, documentation), and a marker-based rewrite would mangle them.
+object_has_markers() {
+    git cat-file blob "$1" 2>/dev/null |
+        awk '/^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { found = 1 } END { exit !found }'
+}
+
+# True when a version of unmerged file $1 in the index (base, ours or theirs)
+# already has marker-shaped lines of its own.
+stages_have_markers() {
+    local blob
     # "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>".
-    while read -r _ blob stage rest; do
-        git cat-file blob "$blob" > "$dir/$stage" || { rm -rf "$dir"; return 1; }
+    while read -r _ blob _; do
+        if object_has_markers "$blob"; then
+            return 0
+        fi
     done < <(git_path ls-files -u -- "$1")
-    git merge-file -p "$dir/2" "$dir/1" "$dir/3" > /dev/null 2>&1 || rc=$?
-    rm -rf "$dir"
-    [ "$rc" -lt 127 ] || return 1
-    printf '%s\n' "$rc"
+    return 1
+}
+
+# True when root-relative path $1 has marker-shaped lines in HEAD or in the
+# other side of the operation in progress.
+committed_versions_have_markers() {
+    local ref
+    for ref in HEAD MERGE_HEAD CHERRY_PICK_HEAD REBASE_HEAD 'REVERT_HEAD^'; do
+        if git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 &&
+            object_has_markers "$ref:$1"; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 resolve_keep_ours() { resolve_keep "$1" ours; }
@@ -1228,7 +1248,7 @@ cmd_take() {
     # Check every file before changing any: a file that is not in conflict
     # would otherwise be staged as it is and reported as resolved.
     # A refusal therefore leaves every file as it was.
-    local args=("$@") files=() whole=() arg file i leftover="" name hunks expected
+    local args=("$@") files=() whole=() arg file i leftover="" name
     local by_hand="resolve it by hand, then run mark-resolved"
     for arg in "$@"; do
         file=$(resolve_path "$arg")
@@ -1248,6 +1268,10 @@ cmd_take() {
             fi
             [ "$(count_hunks "$file")" -gt 0 ] ||
                 die "The conflict markers in $arg are incomplete or ambiguous: $by_hand."
+            # The raw path (not Git's quoted form) to read the committed versions.
+            name=$(git_path ls-files -z --full-name -- "$file" | tr -d '\000')
+            ! committed_versions_have_markers "$name" ||
+                die "$arg also has marker-shaped lines of its own (an example or a fixture): $by_hand."
             whole+=(false)
         elif ! has_both_sides "$file" || [ ! -f "$file" ] || [ -L "$file" ] || ! file_has_markers "$file"; then
             # Deleted on one side, a symbolic link, binary, or otherwise without
@@ -1257,16 +1281,13 @@ cmd_take() {
                 die "Cannot keep both sides of $arg: it has no conflict hunks (binary file, symbolic link, or deleted on one side). Resolve it manually."
             whole+=(true)
         else
-            # Only rewrite what Git itself would call conflicts: an unterminated
-            # or ambiguous hunk, or marker lines that are content (a documented
-            # example), would make the rewrite drop lines.
-            hunks=$(count_hunks "$file")
-            [ "$hunks" -gt 0 ] ||
+            # Every marker-shaped line must be one Git wrote: an unterminated or
+            # ambiguous hunk, or marker lines that are content (a documented
+            # example in one of the versions), would make the rewrite drop lines.
+            [ "$(count_hunks "$file")" -gt 0 ] ||
                 die "The conflict markers in $arg are incomplete or ambiguous: $by_hand."
-            expected=$(git_conflict_count "$file") ||
-                die "Could not check the conflicts of $arg against Git: $by_hand."
-            [ "$hunks" = "$expected" ] ||
-                die "$arg has $hunks marker blocks but $expected conflicts (some markers are content, or were edited): $by_hand."
+            ! stages_have_markers "$file" ||
+                die "$arg also has marker-shaped lines of its own (an example or a fixture): $by_hand."
             whole+=(false)
         fi
         files+=("$file")

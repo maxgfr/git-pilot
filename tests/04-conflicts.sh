@@ -113,7 +113,7 @@ git -C "$doc" commit -q -am "docs: our value"
 git -C "$doc" merge -q other >/dev/null 2>&1 || true
 run "$doc" take theirs guide.md
 assert_eq "take refuses a conflicted file that also documents markers" "$RC" "1"
-assert_contains "the refusal counts the marker blocks" "$ERR" "2 marker blocks but 1 conflicts"
+assert_contains "the refusal names the cause" "$ERR" "marker-shaped lines of its own"
 
 # A conflicted symbolic link that points to a directory is taken as a whole.
 ln_repo=$(new_repo symlink-dir)
@@ -135,6 +135,78 @@ git -C "$ln_repo" merge -q other >/dev/null 2>&1 || true
 run "$ln_repo" take theirs current
 assert_eq "take resolves a symbolic link to a directory" "$RC" "0"
 assert_eq "the link takes their target" "$(readlink "$ln_repo/current")" "b"
+
+# Ordinary conflicts must still resolve, whatever produced them.
+many=$(new_repo many-hunks)
+awk 'BEGIN { for (i = 0; i < 400; i++) print "line " i }' > "$many/m.txt"
+git -C "$many" add m.txt
+git -C "$many" commit -q -m "feat: add m"
+git -C "$many" checkout -q -b other
+awk 'BEGIN { for (i = 0; i < 400; i++) print (i % 3 == 0 ? "theirs " i : "line " i) }' > "$many/m.txt"
+git -C "$many" commit -q -am "feat: their m"
+git -C "$many" checkout -q main
+awk 'BEGIN { for (i = 0; i < 400; i++) print (i % 3 == 0 ? "ours " i : "line " i) }' > "$many/m.txt"
+git -C "$many" commit -q -am "feat: our m"
+git -C "$many" merge -q other >/dev/null 2>&1 || true
+run "$many" take theirs m.txt
+assert_eq "take resolves a file with more than 127 conflicts" "$RC" "0"
+assert_eq "every hunk took their side" "$(grep -c '^theirs ' "$many/m.txt")" "134"
+
+c=$(conflicted_repo diff3-style)
+git -C "$c" checkout -q --conflict=diff3 -- conflict.txt
+run "$c" take ours conflict.txt
+assert_eq "take resolves a conflict rewritten in diff3 style" "$(cat "$c/conflict.txt")" $'line 1\nours\nline 3'
+
+c=$(conflicted_repo ignore-space)
+git -C "$c" merge --abort
+git -C "$c" merge -q -Xignore-space-change other >/dev/null 2>&1 || true
+run "$c" take theirs conflict.txt
+assert_eq "take resolves a conflict from a merge with -X options" "$RC" "0"
+
+two=$(new_repo half-resolved)
+printf '%s\n' "a" "1" "b" "c" "d" "e" "2" "f" > "$two/t.txt"
+git -C "$two" add t.txt
+git -C "$two" commit -q -m "feat: add t"
+git -C "$two" checkout -q -b other
+printf '%s\n' "a" "theirs 1" "b" "c" "d" "e" "theirs 2" "f" > "$two/t.txt"
+git -C "$two" commit -q -am "feat: their t"
+git -C "$two" checkout -q main
+printf '%s\n' "a" "ours 1" "b" "c" "d" "e" "ours 2" "f" > "$two/t.txt"
+git -C "$two" commit -q -am "feat: our t"
+git -C "$two" merge -q other >/dev/null 2>&1 || true
+awk 'done == 0 && /^<<<<<<< / { skip = 1; next } skip && /^>>>>>>> / { skip = 0; done = 1; print "hand 1"; next } !skip { print }' "$two/t.txt" > "$TEST_DIR/t.txt"
+cat "$TEST_DIR/t.txt" > "$two/t.txt"
+run "$two" take theirs t.txt
+assert_eq "take resolves the hunks left after one was resolved by hand" "$(cat "$two/t.txt")" $'a\nhand 1\nb\nc\nd\ne\ntheirs 2\nf'
+
+# A ">>>>>>>" line that belongs to a side would close the hunk early.
+gt=$(new_repo closing-in-content)
+printf '%s\n' "a" "base" "z" > "$gt/g.txt"
+git -C "$gt" add g.txt
+git -C "$gt" commit -q -m "feat: add g"
+git -C "$gt" checkout -q -b other
+printf '%s\n' "a" "theirs 1" ">>>>>>> example" "theirs 2" "z" > "$gt/g.txt"
+git -C "$gt" commit -q -am "feat: their g"
+git -C "$gt" checkout -q main
+printf '%s\n' "a" "ours" "z" > "$gt/g.txt"
+git -C "$gt" commit -q -am "feat: our g"
+git -C "$gt" merge -q other >/dev/null 2>&1 || true
+cp "$gt/g.txt" "$TEST_DIR/g.txt"
+run "$gt" take theirs g.txt
+assert_eq "take refuses a side that contains a closing marker line" "$RC" "1"
+assert_eq "that refusal leaves the file as it was" "$(cat "$gt/g.txt")" "$(cat "$TEST_DIR/g.txt")"
+
+# An already-staged leftover in a file that also documents markers is refused.
+ds=$(new_repo staged-documented)
+printf '%s\n' "Example:" "<<<<<<< HEAD" "A" "=======" "B" ">>>>>>> branch" "end" > "$ds/doc.md"
+git -C "$ds" add doc.md
+git -C "$ds" commit -q -m "docs: add example"
+printf '%s\n' "<<<<<<< HEAD" "mine" "=======" "yours" ">>>>>>> other" >> "$ds/doc.md"
+git -C "$ds" add doc.md
+cp "$ds/doc.md" "$TEST_DIR/doc.md"
+run "$ds" take ours doc.md
+assert_eq "take refuses a leftover next to documented markers" "$RC" "1"
+assert_eq "the documented example is left as it was" "$(cat "$ds/doc.md")" "$(cat "$TEST_DIR/doc.md")"
 
 crlf=$(new_repo crlf)
 printf 'one\r\nbase\r\nthree\r\n' > "$crlf/win.txt"
