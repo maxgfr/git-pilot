@@ -129,11 +129,22 @@ current_branch() {
     printf '%s\n' "${branch:-detached HEAD}"
 }
 
-# git for output that is printed or parsed: no colors and raw, unquoted paths,
-# whatever the user's configuration says.
+# git for output that is printed or parsed: no colors, unquoted non-ASCII paths
+# and diffs of the whole repository (diff.relative would limit them to the
+# current directory), whatever the user's configuration says.
 git_plain() {
-    git -c color.ui=never -c core.quotePath=false "$@"
+    git -c color.ui=never -c core.quotePath=false -c diff.relative=false "$@"
 }
+
+# awk function: the path of a "+++ b/<path>" diff header, without the prefix.
+# Git quotes a path containing a double quote, a backslash or a control
+# character ("+++ \"b/a\\\"b\""): it is kept quoted, as "git diff --name-only"
+# prints it, so that both lists name the file the same way.
+AWK_HEADER_PATH='function header_path(line,   p) {
+    p = substr(line, 5); sub(/\t$/, "", p)
+    if (substr(p, 1, 1) == "\"") { sub(/^"b\//, "\"", p); return p }
+    return substr(p, 3)
+}'
 
 rebase_in_progress() {
     local dir
@@ -145,16 +156,17 @@ unmerged_files() {
     git_plain diff --name-only --diff-filter=U 2>/dev/null || true
 }
 
-# Sorted paths, from the index and the working tree, that have a conflict
-# marker line which commit (or tree) $1 does not have.
-marker_files_against() {
+# Sorted, unique "path<TAB>marker line" pairs, from the index and the working
+# tree, for conflict marker lines that commit (or tree) $1 does not have.
+marker_lines_against() {
     {
         git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$1" -- 2>/dev/null || true
         git_plain diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$1" -- 2>/dev/null || true
-    } | awk '/^diff --git / { in_hunk = 0; next }
+    } | awk "$AWK_HEADER_PATH"'
+             /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
-             !in_hunk && /^\+\+\+ / { file = substr($0, 7); sub(/\t$/, "", file); next }
-             in_hunk && /^\+<<<<<<<( |$)/ && !seen[file]++ { print file }' | LC_ALL=C sort
+             !in_hunk && /^\+\+\+ / { file = header_path($0); next }
+             in_hunk && /^\+<<<<<<<( |$)/ { print file "\t" substr($0, 2) }' | LC_ALL=C sort -u
 }
 
 # Files where an unfinished resolution left conflict markers: marker lines that
@@ -162,7 +174,9 @@ marker_files_against() {
 # progress. Marker lines that a side already had (merge fixtures, documentation
 # about conflicts) are content, not leftovers, and never block a commit.
 leftover_marker_files() {
-    local refs=() ref files i
+    # Compared line by line, not file by file: when each side added its own
+    # fixture line to the same file, neither line is a leftover.
+    local refs=() ref lines i
     if git rev-parse --verify --quiet 'HEAD^{commit}' >/dev/null; then
         refs+=(HEAD)
     else
@@ -174,12 +188,12 @@ leftover_marker_files() {
         fi
     done
 
-    files=$(marker_files_against "${refs[0]}")
+    lines=$(marker_lines_against "${refs[0]}")
     for ((i = 1; i < ${#refs[@]}; i++)); do
-        [ -n "$files" ] || break
-        files=$(LC_ALL=C comm -12 <(printf '%s\n' "$files") <(marker_files_against "${refs[$i]}"))
+        [ -n "$lines" ] || break
+        lines=$(LC_ALL=C comm -12 <(printf '%s\n' "$lines") <(marker_lines_against "${refs[$i]}"))
     done
-    [ -z "$files" ] || printf '%s\n' "$files"
+    [ -z "$lines" ] || printf '%s\n' "$lines" | cut -f1 | awk '!seen[$0]++'
 }
 
 # Unmerged files plus files where a resolution left conflict markers.
@@ -192,6 +206,17 @@ conflicted_files() {
 
 is_unmerged() {
     [ -n "$(git ls-files -u -- "$1" 2>/dev/null)" ]
+}
+
+# True when the index holds stage $2 of unmerged file $1 (2 is ours, 3 is theirs).
+# "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>".
+has_stage() {
+    git ls-files -u -- "$1" 2>/dev/null | awk -v stage="$2" '$3 == stage { found = 1 } END { exit !found }'
+}
+
+# True when neither side of the unmerged file $1 deleted it.
+has_both_sides() {
+    has_stage "$1" 2 && has_stage "$1" 3
 }
 
 # The file is read from stdin so its name is never parsed as a grep option.
@@ -434,12 +459,9 @@ resolve_keep_theirs() {
 # deleted the file, taking it means deleting the file.
 take_whole_side() {
     local strategy="$1" file="$2" stage=2
-    [ "$strategy" != both ] ||
-        die "Cannot keep both sides of $file: it has no conflict markers (binary file, or deleted on one side). Resolve it manually."
     [ "$strategy" = ours ] || stage=3
 
-    # "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>": 2 is ours, 3 is theirs.
-    if git ls-files -u -- "$file" | awk -v stage="$stage" '$3 == stage { found = 1 } END { exit !found }'; then
+    if has_stage "$file" "$stage"; then
         git checkout "--$strategy" -- "$file" || die "Could not check out the '$strategy' version of: $file"
         git add -- "$file" || die "Could not stage: $file"
     else
@@ -448,20 +470,36 @@ take_whole_side() {
     fi
 }
 
+# True when Git knows path $1: it exists, or the index has it.
+path_known() {
+    [ -e "$1" ] || [ -L "$1" ] || [ -n "$(git ls-files -- "$1" 2>/dev/null)" ]
+}
+
 # Paths are printed relative to the repository root but typed relative to the
-# current directory. Accept both: a path that names nothing from the current
-# directory is looked up from the root.
+# current directory. Accept both, and the quoted form Git prints for unusual
+# names ("a\"b.txt"). When both readings name a file, the one in conflict wins.
 resolve_path() {
     local path="$1" root
     case "$path" in
+        \"*\")
+            path=${path#\"}
+            path=${path%\"}
+            path=${path//\\\"/\"}
+            path=$(printf '%b' "$path")
+            ;;
+    esac
+    case "$path" in
         /*) printf '%s\n' "$path"; return 0 ;;
     esac
-    if [ -e "$path" ] || [ -L "$path" ] || [ -n "$(git ls-files -- "$path" 2>/dev/null)" ]; then
-        printf '%s\n' "$path"
-        return 0
-    fi
     root=$(repo_root)
-    if [ -e "$root/$path" ] || [ -L "$root/$path" ] || [ -n "$(git ls-files -- ":(top)$path" 2>/dev/null)" ]; then
+    if path_known "$path"; then
+        if [ "$root/$path" -ef "$path" ] || ! path_known "$root/$path" ||
+            is_unmerged "$path" || ! is_unmerged "$root/$path"; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    fi
+    if path_known "$root/$path"; then
         printf '%s\n' "$root/$path"
         return 0
     fi
@@ -532,9 +570,10 @@ staged_findings() {
     # File headers only count outside hunks (an added "++ x" line reads "+++ x"),
     # and the prefixes are forced so that diff.noprefix cannot shift the path.
     git_plain diff --cached -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR 2>/dev/null |
-        awk '/^diff --git / { in_hunk = 0; next }
+        awk "$AWK_HEADER_PATH"'
+             /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
-             !in_hunk && /^\+\+\+ / { file = substr($0, 7); next }
+             !in_hunk && /^\+\+\+ / { file = header_path($0); next }
              in_hunk && /^\+/ { print file "\t" substr($0, 2) }' |
         { grep -E -e "$token_pattern" || true; } |
         cut -f1 | awk '!seen[$0]++ { print "secret-content: " $0 }'
@@ -966,19 +1005,30 @@ cmd_take() {
 
     # Check every file before changing any: a file that is not in conflict
     # would otherwise be staged as it is and reported as resolved.
-    local args=("$@") files=() arg file i
+    # A refusal therefore leaves every file as it was.
+    local args=("$@") files=() whole=() arg file i
     for arg in "$@"; do
         file=$(resolve_path "$arg")
         if ! is_unmerged "$file"; then
             [ -f "$file" ] || die "File not found: $arg"
             file_has_markers "$file" || die "Not in conflict, nothing to resolve: $arg"
+            whole+=(false)
+        elif ! has_both_sides "$file" || [ ! -f "$file" ] || ! file_has_markers "$file"; then
+            # Deleted on one side, binary, or otherwise without markers to edit:
+            # one side's version is taken as a whole. Markers in the file are
+            # then content (a fixture), not something to resolve.
+            [ "$strategy" != both ] ||
+                die "Cannot keep both sides of $arg: it has no conflict hunks (binary file, or deleted on one side). Resolve it manually."
+            whole+=(true)
+        else
+            whole+=(false)
         fi
         files+=("$file")
     done
 
     for i in "${!files[@]}"; do
         file=${files[$i]}
-        if is_unmerged "$file" && { [ ! -f "$file" ] || ! file_has_markers "$file"; }; then
+        if [ "${whole[$i]}" = true ]; then
             take_whole_side "$strategy" "$file"
         else
             "resolve_keep_$strategy" "$file"

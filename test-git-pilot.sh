@@ -362,6 +362,64 @@ run_stdin "$c" "Merge branch 'other'" commit -F -
 assert_eq "merge commit succeeds after resolution" "$RC" "0"
 assert_eq "merge commit has two parents" "$(git -C "$c" rev-list --parents -1 HEAD | wc -w | xargs)" "3"
 
+# Each side adding its own fixture line to the same file is not a conflict.
+fl=$(new_repo fixture-lines)
+printf '%s\n' "top" "middle 1" "middle 2" "middle 3" "bottom" > "$fl/fixtures.txt"
+git -C "$fl" add fixtures.txt
+git -C "$fl" commit -q -m "test: add fixtures"
+git -C "$fl" checkout -q -b other
+printf '%s\n' "top" "middle 1" "middle 2" "middle 3" "bottom" "<<<<<<< theirs fixture" > "$fl/fixtures.txt"
+git -C "$fl" commit -q -am "test: their fixture"
+git -C "$fl" checkout -q main
+printf '%s\n' "<<<<<<< our fixture" "top" "middle 1" "middle 2" "middle 3" "bottom" > "$fl/fixtures.txt"
+git -C "$fl" commit -q -am "test: our fixture"
+git -C "$fl" merge -q --no-commit other >/dev/null 2>&1 || true
+run "$fl" conflicts
+assert_eq "fixture lines added by each side are not conflicts" "$OUT" ""
+run "$fl" commit -m "Merge branch 'other'"
+assert_eq "a clean merge of fixture lines can be committed" "$RC" "0"
+
+# A file deleted on one side keeps its marker-shaped content when the other side is taken.
+dm=$(new_repo delete-fixture)
+printf '%s\n' "<<<<<<< HEAD" "A" "=======" "B" ">>>>>>> x" "more" > "$dm/fixture.txt"
+git -C "$dm" add fixture.txt
+git -C "$dm" commit -q -m "test: add fixture"
+git -C "$dm" checkout -q -b other
+git -C "$dm" rm -q fixture.txt
+git -C "$dm" commit -q -m "test: remove fixture"
+git -C "$dm" checkout -q main
+printf '%s\n' "ours" >> "$dm/fixture.txt"
+git -C "$dm" commit -q -am "test: extend fixture"
+git -C "$dm" merge -q other >/dev/null 2>&1 || true
+run "$dm" take ours fixture.txt
+assert_eq "take ours keeps a deleted-on-their-side fixture intact" "$(git -C "$dm" rev-parse :fixture.txt)" "$(git -C "$dm" rev-parse HEAD:fixture.txt)"
+
+# take both on a mix of files refuses before changing any of them.
+mix=$(binary_conflicted_repo mixed)
+git -C "$mix" merge --abort
+printf '%s\n' "base" > "$mix/text.txt"
+git -C "$mix" add text.txt
+git -C "$mix" commit -q -m "feat: add text"
+git -C "$mix" checkout -q other
+printf '%s\n' "theirs" > "$mix/text.txt"
+git -C "$mix" add text.txt
+git -C "$mix" commit -q -m "feat: their text"
+git -C "$mix" checkout -q main
+printf '%s\n' "ours" > "$mix/text.txt"
+git -C "$mix" commit -q -am "feat: our text"
+git -C "$mix" merge -q other >/dev/null 2>&1 || true
+run "$mix" take both text.txt blob.bin
+assert_eq "take both refuses a mix with a binary conflict" "$RC" "1"
+assert_eq "a refused take both changes no file" "$(git -C "$mix" diff --name-only --diff-filter=U | tr '\n' ' ')" "blob.bin text.txt "
+
+# Names that Git prints quoted are listed once, and accepted back as printed.
+qt=$(conflicted_repo quoted 'q"uote.txt')
+run "$qt" conflicts
+assert_eq "conflicts lists a quoted name once, as Git prints it" "$OUT" '"q\"uote.txt"'
+run "$qt" take ours '"q\"uote.txt"'
+assert_eq "take accepts a name in Git's quoted form" "$RC" "0"
+assert_eq "take resolved the quoted name" "$(cat "$qt/q\"uote.txt")" $'line 1\nours\nline 3'
+
 section "cherry-pick and revert conflicts"
 
 cp=$(conflicted_repo cherry-pick)
@@ -460,6 +518,27 @@ run "$s/pkg" mark-resolved pkg/conflict.txt
 assert_eq "mark-resolved accepts a root-relative path from a subdirectory" "$RC" "0"
 run "$s/pkg" conflicts
 assert_eq "the root-relative path was staged" "$OUT" ""
+
+# The same name in the current directory does not hide the file in conflict.
+s=$(conflicted_repo subdir-shadow "a.txt")
+mkdir -p "$s/sub"
+printf '%s\n' "unrelated" > "$s/sub/a.txt"
+printf '%s\n' "line 1" "ours and theirs" "line 3" > "$s/a.txt"
+run "$s/sub" mark-resolved a.txt
+assert_eq "mark-resolved prefers the file in conflict over a namesake" "$(git -C "$s" diff --name-only --diff-filter=U)" ""
+assert_eq "mark-resolved leaves the namesake unstaged" "$(git -C "$s" ls-files sub/a.txt)" ""
+
+# diff.relative must not hide conflict markers outside the current directory.
+s=$(new_repo subdir-relative)
+mkdir -p "$s/sub"
+printf '%s\n' "x" > "$s/sub/x.txt"
+printf '%s\n' "<<<<<<< HEAD" "a" "=======" "b" ">>>>>>> other" > "$s/root.txt"
+git -C "$s" add -A
+git -C "$s" config diff.relative true
+run "$s/sub" conflicts
+assert_eq "conflicts ignores diff.relative" "$OUT" "root.txt"
+run "$s/sub" commit -m "feat: x" --dry-run
+assert_eq "commit sees markers outside the directory despite diff.relative (exit 2)" "$RC" "2"
 
 section "Output independent of the user's Git configuration"
 
