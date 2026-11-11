@@ -213,6 +213,65 @@ run "$ds" take ours doc.md
 assert_eq "take refuses a leftover next to documented markers" "$RC" "1"
 assert_eq "the documented example is left as it was" "$(cat "$ds/doc.md")" "$(cat "$TEST_DIR/doc.md")"
 
+# A file without a final newline keeps it that way.
+nonl=$(new_repo no-final-newline)
+printf 'one\nbase\nlast' > "$nonl/n.txt"
+git -C "$nonl" add n.txt
+git -C "$nonl" commit -q -m "feat: add n"
+git -C "$nonl" checkout -q -b other
+printf 'one\ntheirs\nlast' > "$nonl/n.txt"
+git -C "$nonl" commit -q -am "feat: their n"
+git -C "$nonl" checkout -q main
+printf 'one\nours\nlast' > "$nonl/n.txt"
+git -C "$nonl" commit -q -am "feat: our n"
+git -C "$nonl" merge -q other >/dev/null 2>&1 || true
+run "$nonl" take theirs n.txt
+assert_eq "take keeps a missing final newline missing" "$(od -An -c "$nonl/n.txt" | tr -d ' \n')" 'one\ntheirs\nlast'
+
+# Longer markers from the conflict-marker-size attribute are read as markers.
+ms=$(new_repo marker-size)
+printf '%s\n' "*.txt conflict-marker-size=10" > "$ms/.gitattributes"
+printf '%s\n' "a" "base" "c" "d" "e" "f" "only theirs changes this" > "$ms/s.txt"
+git -C "$ms" add -A
+git -C "$ms" commit -q -m "feat: add s"
+git -C "$ms" checkout -q -b other
+printf '%s\n' "a" "theirs" "c" "d" "e" "f" "changed by theirs" > "$ms/s.txt"
+git -C "$ms" commit -q -am "feat: their s"
+git -C "$ms" checkout -q main
+printf '%s\n' "a" "ours" "c" "d" "e" "f" "only theirs changes this" > "$ms/s.txt"
+git -C "$ms" commit -q -am "feat: our s"
+git -C "$ms" merge -q other >/dev/null 2>&1 || true
+cp "$ms/s.txt" "$TEST_DIR/s.txt"
+run "$ms" mark-resolved s.txt
+assert_eq "mark-resolved refuses 10-character markers (exit 2)" "$RC" "2"
+run "$ms" take ours s.txt
+assert_eq "take with 10-character markers keeps their clean change" "$(cat "$ms/s.txt")" $'a\nours\nc\nd\ne\nf\nchanged by theirs'
+
+# NUL bytes in a file with markers: awk would cut lines, so take refuses.
+nb=$(conflicted_repo nul-in-conflict)
+printf 'line 1\n<<<<<<< HEAD\nours\000x\n=======\ntheirs\n>>>>>>> other\nline 3\n' > "$nb/conflict.txt"
+run "$nb" take ours conflict.txt
+assert_eq "take refuses a file with NUL bytes" "$RC" "1"
+assert_contains "the NUL refusal is explained" "$ERR" "NUL bytes"
+
+# A staged leftover with no other side to check against (after "git stash pop").
+sp=$(new_repo stash-pop)
+printf '%s\n' "a" > "$sp/p.txt"
+git -C "$sp" add p.txt
+git -C "$sp" commit -q -m "feat: add p"
+printf '%s\n' "<<<<<<< Updated upstream" "x" "=======" "y" ">>>>>>> Stashed changes" > "$sp/p.txt"
+git -C "$sp" add p.txt
+run "$sp" take ours p.txt
+assert_eq "take refuses a leftover it cannot check against the other side" "$RC" "1"
+assert_contains "that refusal says why" "$ERR" "cannot be checked"
+
+# An unreadable version of a conflicted file is a reason to refuse, not to go on.
+ur=$(conflicted_repo unreadable-stage)
+theirs_blob=$(git -C "$ur" ls-files -u -- conflict.txt | awk '$3 == 3 { print $2 }')
+rm -f "$ur/.git/objects/${theirs_blob:0:2}/${theirs_blob:2}"
+run "$ur" take ours conflict.txt
+assert_eq "take refuses when a version of the file cannot be read" "$RC" "1"
+
 crlf=$(new_repo crlf)
 printf 'one\r\nbase\r\nthree\r\n' > "$crlf/win.txt"
 git -C "$crlf" add win.txt

@@ -230,7 +230,7 @@ marker_lines_against() {
              /^diff --git / { in_hunk = 0; next }
              /^@@ / { in_hunk = 1; next }
              !in_hunk && /^\+\+\+ / { file = header_path($0); next }
-             in_hunk && /^\+(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { print file "\t" substr($0, 2) }' | sort -u
+             in_hunk && /^\+(<<<<<<<+|>>>>>>>+|\|\|\|\|\|\|\|+)( |\r?$)/ { print file "\t" substr($0, 2) }' | sort -u
 }
 
 # Files where an unfinished resolution left conflict markers: marker lines that
@@ -291,8 +291,14 @@ has_both_sides() {
 # The file is read from stdin so that awk never parses its name as an
 # assignment. Markers are matched as Git writes them, with LF or CRLF endings.
 file_has_markers() {
-    awk '/^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { found = 1; exit } END { exit !found }' < "$1"
+    tr -d '\000' < "$1" | awk "$AWK_MARKER_LINE"' { found = 1; exit } END { exit !found }'
 }
+
+# An awk pattern for a line shaped like a conflict marker: the opening, base or
+# closing marker, 7 characters or more (the conflict-marker-size attribute can
+# make them longer), then a space or the end of the line. "=======" alone is
+# left out: it is also a heading underline.
+AWK_MARKER_LINE='/^(<<<<<<<+|>>>>>>>+|\|\|\|\|\|\|\|+)( |\r?$)/' 
 
 # Exit with EXIT_CONFLICTS when conflicts remain, listing them on stderr.
 require_no_conflicts() {
@@ -485,10 +491,14 @@ gather_merge_context() {
 # Rewrite a file in place, keeping its mode. The file is read from stdin:
 # as an operand, awk would treat a name like "key=value.txt" as an assignment.
 rewrite_with_awk() {
-    local file="$1" program="$2" side="${3:-}"
+    local file="$1" program="$2" side="${3:-}" size="${4:-7}" final_nl=0
     local tmp
     tmp=$(mktemp)
-    if ! awk -v side="$side" "$program" < "$file" > "$tmp"; then
+    # Whether the file ends with a newline, so that the rewrite keeps it so.
+    if [ -s "$file" ] && [ -z "$(tail -c 1 "$file")" ]; then
+        final_nl=1
+    fi
+    if ! awk -v side="$side" -v size="$size" -v final_nl="$final_nl" "$program" < "$file" > "$tmp"; then
         rm -f "$tmp"
         die "Could not rewrite $file: left as it was."
     fi
@@ -506,64 +516,108 @@ rewrite_with_awk() {
 # nested "<<<<<<<" in one hunk, or a ">>>>>>>" or "|||||||" outside any hunk
 # (a marker-shaped line in the content makes the split ambiguous). The same
 # program does both, so the check matches the rewrite.
+# shellcheck disable=SC2016  # an awk program: $0 is awk's, not the shell's
 AWK_HUNKS='
-    BEGIN { keep_ours = (side != "theirs"); keep_theirs = (side != "ours") }
-    state == 1 && /^<<<<<<<( |\r?$)/ { bad = 1 }
-    state == 3 && /^=======\r?$/ { bad = 1 }
-    state == 0 && /^(>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { bad = 1 }
-    state == 0 && /^<<<<<<<( |\r?$)/ { state = 1; hunks++; next }
-    state == 1 && /^\|\|\|\|\|\|\|( |\r?$)/ { state = 2; next }
-    (state == 1 || state == 2) && /^=======\r?$/ { state = 3; next }
-    state == 3 && /^>>>>>>>( |\r?$)/ { state = 0; next }
+    function repeat(c, n,   out) { out = ""; while (n-- > 0) out = out c; return out }
+    BEGIN {
+        if (size + 0 < 1) size = 7
+        keep_ours = (side != "theirs"); keep_theirs = (side != "ours")
+        re_open = "^" repeat("<", size) "( |\r?$)"
+        re_base = "^" repeat("\\|", size) "( |\r?$)"
+        re_sep = "^" repeat("=", size) "\r?$"
+        re_close = "^" repeat(">", size) "( |\r?$)"
+    }
+    state == 1 && $0 ~ re_open { bad = 1 }
+    state == 3 && $0 ~ re_sep { bad = 1 }
+    state == 0 && ($0 ~ re_close || $0 ~ re_base) { bad = 1 }
+    state == 0 && $0 ~ re_open { state = 1; hunks++; next }
+    state == 1 && $0 ~ re_base { state = 2; next }
+    (state == 1 || state == 2) && $0 ~ re_sep { state = 3; next }
+    state == 3 && $0 ~ re_close { state = 0; next }
     side == "count" { next }
-    state == 0 || (state == 1 && keep_ours) || (state == 3 && keep_theirs) { print }
+    # Lines are joined rather than ended, so that a file without a final
+    # newline stays without one.
+    state == 0 || (state == 1 && keep_ours) || (state == 3 && keep_theirs) { printf "%s%s", nl, $0; nl = "\n" }
     END {
         if (state) bad = 1
         if (side == "count") print (bad ? -1 : hunks + 0)
         else if (bad) exit 3
+        else if (nl != "" && final_nl) printf "\n"
     }'
 
 resolve_keep() {
-    rewrite_with_awk "$1" "$AWK_HUNKS" "$2"
+    rewrite_with_awk "$1" "$AWK_HUNKS" "$2" "$(marker_size "$1")"
+}
+
+# Length of the conflict markers Git writes in file $1 (attribute
+# conflict-marker-size, 7 by default).
+marker_size() {
+    local size
+    size=$(git_path check-attr conflict-marker-size -- "$1" 2>/dev/null | sed 's/.*: //')
+    case "$size" in
+        ''|*[!0-9]*) size=7 ;;
+    esac
+    printf '%s\n' "$size"
+}
+
+# True when file $1 contains a NUL byte: awk would cut lines there.
+has_nul() {
+    [ "$(tr -d '\000' < "$1" | wc -c)" -ne "$(wc -c < "$1")" ]
 }
 
 # Number of conflict hunks in file $1, or -1 when it cannot be resolved safely.
 count_hunks() {
-    awk -v side=count "$AWK_HUNKS" < "$1"
+    local size
+    size=$(marker_size "$1")
+    awk -v side=count -v size="$size" "$AWK_HUNKS" < "$1"
 }
 
-# True when Git object $1 (a blob id, or "<commit>:<path>") has a line shaped
-# like a conflict marker. Such lines in a version of the file are content (a
-# merge fixture, documentation), and a marker-based rewrite would mangle them.
-object_has_markers() {
-    git cat-file blob "$1" 2>/dev/null |
-        awk '/^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)( |\r?$)/ { found = 1 } END { exit !found }'
+# True unless Git object $1 (a blob id, or "<commit>:<path>") can be read and
+# has no line shaped like a conflict marker. Such lines in a version of the
+# file are content (a merge fixture, documentation) that a marker-based rewrite
+# would mangle; a version that cannot be read counts as one that has them, so
+# that callers refuse rather than guess.
+object_may_have_markers() {
+    local tmp
+    tmp=$(mktemp)
+    if ! git cat-file blob "$1" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 0
+    fi
+    if tr -d '\000' < "$tmp" | awk "$AWK_MARKER_LINE"' { found = 1 } END { exit !found }'; then
+        rm -f "$tmp"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
 }
 
-# True when a version of unmerged file $1 in the index (base, ours or theirs)
-# already has marker-shaped lines of its own.
-stages_have_markers() {
+# True unless every version of unmerged file $1 in the index (base, ours,
+# theirs) is free of marker-shaped lines.
+stages_may_have_markers() {
     local blob
     # "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>".
     while read -r _ blob _; do
-        if object_has_markers "$blob"; then
+        if object_may_have_markers "$blob"; then
             return 0
         fi
     done < <(git_path ls-files -u -- "$1")
     return 1
 }
 
-# True when root-relative path $1 has marker-shaped lines in HEAD or in the
-# other side of the operation in progress.
-committed_versions_have_markers() {
-    local ref
-    for ref in HEAD MERGE_HEAD CHERRY_PICK_HEAD REBASE_HEAD 'REVERT_HEAD^'; do
-        if git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 &&
-            object_has_markers "$ref:$1"; then
-            return 0
-        fi
+# True unless root-relative path $1 can be read in HEAD and in the other side of
+# the operation in progress, and neither version has marker-shaped lines. With
+# no operation in progress (a leftover from "git stash pop", say) or a path the
+# other side does not have (a rename), the other version cannot be checked.
+committed_versions_may_have_markers() {
+    local ref others=0
+    object_may_have_markers "HEAD:$1" && return 0
+    for ref in MERGE_HEAD CHERRY_PICK_HEAD REBASE_HEAD 'REVERT_HEAD^'; do
+        git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 || continue
+        others=$((others + 1))
+        object_may_have_markers "$ref:$1" && return 0
     done
-    return 1
+    [ "$others" -eq 0 ]
 }
 
 resolve_keep_ours() { resolve_keep "$1" ours; }
@@ -1291,8 +1345,8 @@ cmd_take() {
                 die "The conflict markers in $arg are incomplete or ambiguous: $by_hand."
             # The raw path (not Git's quoted form) to read the committed versions.
             name=$(git_path ls-files -z --full-name -- "$file" | tr -d '\000')
-            ! committed_versions_have_markers "$name" ||
-                die "$arg also has marker-shaped lines of its own (an example or a fixture): $by_hand."
+            ! committed_versions_may_have_markers "$name" ||
+                die "$arg may have marker-shaped lines of its own (an example or a fixture), or a version that cannot be checked: $by_hand."
             whole+=(false)
         elif ! has_both_sides "$file" || [ ! -f "$file" ] || [ -L "$file" ] || ! file_has_markers "$file"; then
             # Deleted on one side, a symbolic link, binary, or otherwise without
@@ -1305,10 +1359,12 @@ cmd_take() {
             # Every marker-shaped line must be one Git wrote: an unterminated or
             # ambiguous hunk, or marker lines that are content (a documented
             # example in one of the versions), would make the rewrite drop lines.
+            ! has_nul "$file" ||
+                die "$arg contains NUL bytes, which take cannot rewrite: $by_hand."
             [ "$(count_hunks "$file")" -gt 0 ] ||
                 die "The conflict markers in $arg are incomplete or ambiguous: $by_hand."
-            ! stages_have_markers "$file" ||
-                die "$arg also has marker-shaped lines of its own (an example or a fixture): $by_hand."
+            ! stages_may_have_markers "$file" ||
+                die "$arg may have marker-shaped lines of its own (an example or a fixture), or a version that cannot be checked: $by_hand."
             whole+=(false)
         fi
         files+=("$file")
