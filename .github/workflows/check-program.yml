@@ -20,6 +20,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # The gitleaks integration is tested where it is installed; Ubuntu runs
+      # the suite without it, which is the other path worth covering.
+      - name: Install gitleaks
+        if: runner.os == 'macOS'
+        run: brew install gitleaks
+
       - name: Run CLI and skill tests
         run: bash test-git-pilot.sh
 
@@ -32,7 +38,7 @@ jobs:
 
       # ShellCheck ships with the runner image: no third-party action needed.
       - name: Run ShellCheck
-        run: shellcheck script.sh test-git-pilot.sh .version-hook.sh
+        run: shellcheck -x script.sh test-git-pilot.sh .version-hook.sh
 
   # Releases only happen from main, and only once the tests and ShellCheck pass.
   release:

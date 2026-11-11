@@ -15,9 +15,9 @@ git-pilot ships two things that must stay in sync:
 
 ## Verification
 
-- Run `bash -n script.sh test-git-pilot.sh` after shell changes.
-- Run `shellcheck script.sh test-git-pilot.sh .version-hook.sh` before committing.
-- Run `bash test-git-pilot.sh`; it drives the public CLI against temporary repositories and checks the skill packaging.
+- Run `bash -n script.sh test-git-pilot.sh tests/*.sh .version-hook.sh` after shell changes.
+- Run `shellcheck -x script.sh test-git-pilot.sh .version-hook.sh` before committing (`-x` follows the test files).
+- Run `bash test-git-pilot.sh`; it drives the public CLI against temporary repositories and checks the skill packaging. Each section lives in `tests/NN-name.sh`; the files run in order in one shell and later ones reuse repositories set up by earlier ones, so add a new test to the section it belongs to.
 - Exercise commit, conflict-resolution, and rebase paths when changing Git logic or `SKILL.md`.
 
 ## Release
