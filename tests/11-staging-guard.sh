@@ -95,6 +95,7 @@ if command -v gitleaks >/dev/null 2>&1; then
     assert_contains "gitleaks flags a Shopify token" "$OUT" "secret-content: shop.txt"
     run_env "$guard" GIT_PILOT_GITLEAKS=1 commit -m "feat: shop" --dry-run
     assert_eq "commit refuses what gitleaks flags (exit 5)" "$RC" "5"
+    assert_contains "commit names the file gitleaks flagged" "$ERR" "secret-content: shop.txt"
     printf 'aws_key = "AKIA%s"\n' "ABCDEFGHIJKLMNOP" > "$guard/both.txt"
     git -C "$guard" add both.txt
     run_env "$guard" GIT_PILOT_GITLEAKS=1 commit-context
