@@ -176,8 +176,19 @@ quote_path() {
         printf '%s\n' "$path"
         return 0
     fi
-    # Through the environment: awk -v would interpret the backslashes.
-    GIT_PILOT_PATH="$path" awk "$AWK_JSON_TO_GIT_PATH"'BEGIN { print git_quote(ENVIRON["GIT_PILOT_PATH"]) }'
+    # The common escapes in Bash; awk only for the rare other control bytes,
+    # which need octal. Through the environment: awk -v would read backslashes.
+    local LC_ALL=C
+    path=${path//\\/\\\\}
+    path=${path//\"/\\\"}
+    path=${path//$'\t'/\\t}
+    path=${path//$'\n'/\\n}
+    path=${path//$'\r'/\\r}
+    case "$path" in
+        *[[:cntrl:]]*)
+            GIT_PILOT_PATH="$1" awk "$AWK_JSON_TO_GIT_PATH"'BEGIN { print git_quote(ENVIRON["GIT_PILOT_PATH"]) }' ;;
+        *) printf '"%s"\n' "$path" ;;
+    esac
 }
 
 # The raw diff that the safety checks read: the stored bytes, without textconv
@@ -735,7 +746,12 @@ run_with_timeout() {
     shift
     "$@" &
     pid=$!
-    ( sleep "$seconds" && kill "$pid" 2>/dev/null ) &
+    # The watcher stops its own sleep when it is stopped, so none is left behind.
+    (
+        sleep "$seconds" &
+        trap 'kill $! 2>/dev/null; exit 0' TERM
+        wait $! && kill "$pid" 2>/dev/null
+    ) &
     watcher=$!
     wait "$pid" || rc=$?
     kill "$watcher" 2>/dev/null || true
@@ -1153,11 +1169,15 @@ cmd_push() {
         log_error "Push rejected: the remote has commits you do not have. Run 'rebase start', then 'push' again."
         exit "$EXIT_PUSH_REJECTED"
     fi
-    # push.default=matching pushes other branches too: when only those failed,
-    # the current branch is on the remote and this command did its job.
-    if printf '%s\n' "$verdict" | awk -F'\t' -v src="refs/heads/$branch:" '
-        $1 == "=" && index($2, src) == 1 { found = 1 } END { exit !found }'; then
-        log_warn "The current branch is pushed, but other branches were rejected (push.default=$(git config --get push.default || echo simple)); see git's message above."
+    # push.default=matching pushes other branches too: when the current branch
+    # is on the remote and only another branch was rejected, this command did
+    # its job. Anything else (a pre-push hook, a rejected tag) stays a failure.
+    if [ "$(git config --get push.default 2>/dev/null || true)" = matching ] &&
+        printf '%s\n' "$verdict" | awk -F'\t' -v src="refs/heads/$branch:" '
+            $1 == "=" && index($2, src) == 1 { current = 1 }
+            $1 == "!" && index($2, "refs/heads/") == 1 && index($2, src) != 1 { other = 1 }
+            END { exit !(current && other) }'; then
+        log_warn "The current branch is pushed, but other branches were rejected (push.default=matching); see git's message above."
         return 0
     fi
     die "git push failed (see git's message above), and not because the current branch is behind its remote: a rebase will not help."
@@ -1311,7 +1331,10 @@ cmd_mark_resolved() {
     for arg in "$@"; do
         file=$(resolve_path "$arg")
         # A directory would be staged whole, without its files being checked.
-        [ ! -d "$file" ] || die "mark-resolved takes files, not directories: $arg"
+        # A symbolic link is staged as a link, wherever it points.
+        if [ -d "$file" ] && [ ! -L "$file" ]; then
+            die "mark-resolved takes files, not directories: $arg"
+        fi
         if [ -f "$file" ]; then
             if file_has_markers "$file"; then
                 log_error "Conflict markers remain in: $arg"

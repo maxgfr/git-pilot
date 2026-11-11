@@ -135,6 +135,11 @@ git -C "$ln_repo" merge -q other >/dev/null 2>&1 || true
 run "$ln_repo" take theirs current
 assert_eq "take resolves a symbolic link to a directory" "$RC" "0"
 assert_eq "the link takes their target" "$(readlink "$ln_repo/current")" "b"
+git -C "$ln_repo" reset -q --hard HEAD
+git -C "$ln_repo" merge -q other >/dev/null 2>&1 || true
+run "$ln_repo" mark-resolved current
+assert_eq "mark-resolved stages a symbolic link to a directory" "$RC" "0"
+assert_eq "the link is no longer in conflict" "$(git -C "$ln_repo" diff --name-only --diff-filter=U)" ""
 
 # Ordinary conflicts must still resolve, whatever produced them.
 many=$(new_repo many-hunks)

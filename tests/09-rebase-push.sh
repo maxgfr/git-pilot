@@ -157,6 +157,10 @@ git -C "$local_clone" config core.hooksPath "$hooks"
 run "$local_clone" push
 assert_eq "push refused by a hook exits 1, not 4" "$RC" "1"
 assert_eq "the pre-push hook runs once" "$(wc -l < "$TEST_DIR/pre-push-runs" | xargs)" "1"
+git -C "$local_clone" config push.default matching
+run "$local_clone" push
+assert_eq "with push.default=matching, a hook refusal still exits 1" "$RC" "1"
+git -C "$local_clone" config --unset push.default
 git -C "$local_clone" config --unset core.hooksPath
 git -C "$local_clone" reset -q --hard HEAD~1
 git -C "$local_clone" checkout -q main

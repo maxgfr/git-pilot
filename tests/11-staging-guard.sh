@@ -127,6 +127,10 @@ elapsed=$(( $(date +%s) - started ))
 assert_eq "a hanging gitleaks does not fail commit-context" "$RC" "0"
 assert_contains "a hanging gitleaks is reported" "$ERR" "did not finish within 2s"
 if [ "$elapsed" -lt 20 ]; then pass "a hanging gitleaks is stopped by the timeout"; else fail "a hanging gitleaks is stopped by the timeout (${elapsed}s)"; fi
+# Its watcher leaves no sleep behind (an unusual timeout makes the process easy to find).
+printf '%s\n' '#!/bin/sh' '[ "$2" = "--help" ] && exit 0' 'exit 0' > "$stub/gitleaks"
+(cd "$guard" && PATH="$stub:$PATH" GIT_PILOT_GITLEAKS=1 GIT_PILOT_GITLEAKS_TIMEOUT=4321 "$GIT_PILOT" commit-context >/dev/null 2>&1 </dev/null)
+if pgrep -f 'sleep 4321' >/dev/null; then fail "the gitleaks watcher leaves no sleep behind"; else pass "the gitleaks watcher leaves no sleep behind"; fi
 printf '%s\n' '#!/bin/sh' "echo run >> \"$TEST_DIR/stub-fail-runs\"" '[ "$2" = "--help" ] && exit 0' 'exit 3' > "$stub/gitleaks"
 (cd "$guard" && PATH="$stub:$PATH" GIT_PILOT_GITLEAKS=1 "$GIT_PILOT" commit -m "feat: shop" --dry-run >/dev/null 2>&1 </dev/null)
 # One run to tell the version (--help), one scan: no second attempt.
