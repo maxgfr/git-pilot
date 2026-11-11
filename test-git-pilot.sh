@@ -373,6 +373,27 @@ assert_eq "take refuses a file that is not in conflict" "$RC" "1"
 assert_contains "take says the file is not in conflict" "$ERR" "Not in conflict"
 assert_eq "a refused take stages nothing" "$(git -C "$c" diff --cached --name-only)" ""
 
+# A committed file that documents conflict markers is not a conflict either.
+c=$(new_repo documented)
+printf '%s\n' "Example:" "<<<<<<< HEAD" "mine" "=======" "yours" ">>>>>>> branch" > "$c/doc.md"
+git -C "$c" add doc.md
+git -C "$c" commit -q -m "docs: explain conflicts"
+run "$c" take theirs doc.md
+assert_eq "take refuses a committed file that documents markers" "$RC" "1"
+assert_eq "the documented markers are left untouched" "$(git -C "$c" status --porcelain)" ""
+
+# Directories and pathspec patterns are refused or taken literally.
+c=$(conflicted_repo take-directory)
+printf '%s\n' "untracked" > "$c/stray.txt"
+run "$c" take ours .
+assert_eq "take refuses a directory" "$RC" "1"
+assert_eq "a refused directory stages nothing" "$(git -C "$c" ls-files stray.txt)" ""
+run "$c" mark-resolved ':/'
+assert_eq "mark-resolved takes ':/' as a file name, not the whole tree" "$RC" "1"
+run "$c" mark-resolved '*.txt'
+assert_eq "mark-resolved takes '*.txt' as a file name, not a pattern" "$RC" "1"
+assert_eq "a refused pattern stages nothing" "$(git -C "$c" diff --name-only --diff-filter=U)" "conflict.txt"
+
 # A lone separator is only reported: it is also a heading underline.
 c=$(conflicted_repo separator)
 printf '%s\n' "Title" "=======" "ours and theirs" > "$c/conflict.txt"
@@ -599,6 +620,15 @@ run "$s/sub" conflicts
 assert_eq "conflicts ignores diff.relative" "$OUT" "root.txt"
 run "$s/sub" commit -m "feat: x" --dry-run
 assert_eq "commit sees markers outside the directory despite diff.relative (exit 2)" "$RC" "2"
+git -C "$s" rm -q --cached root.txt
+rm "$s/root.txt"
+printf 'TOKEN=x\n' > "$s/.env"
+git -C "$s" add .env sub/x.txt
+git -C "$s" reset -q sub/x.txt
+run "$s/sub" commit-context
+assert_contains "the staging guard ignores diff.relative" "$OUT" "secret-file: .env"
+run "$s/sub" commit -m "chore: env" --dry-run
+assert_eq "commit refuses a secret outside the directory despite diff.relative (exit 5)" "$RC" "5"
 
 section "Output independent of the user's Git configuration"
 

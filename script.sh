@@ -144,7 +144,14 @@ current_branch() {
 # and diffs of the whole repository (diff.relative would limit them to the
 # current directory), whatever the user's configuration says.
 git_plain() {
-    git -c color.ui=never -c core.quotePath=false -c diff.relative=false "$@"
+    git -c color.ui=never -c color.diff=never -c core.quotePath=false \
+        -c diff.relative=false -c log.showSignature=false "$@"
+}
+
+# git with a path the user named: a pathspec such as "*.txt" or ":/" is the
+# literal file name, never a pattern that would reach other files.
+git_path() {
+    GIT_LITERAL_PATHSPECS=1 git_plain "$@"
 }
 
 # awk function: the path of a "+++ b/<path>" diff header, without the prefix.
@@ -221,13 +228,13 @@ conflicted_files() {
 }
 
 is_unmerged() {
-    [ -n "$(git ls-files -u -- "$1" 2>/dev/null)" ]
+    [ -n "$(git_path ls-files -u -- "$1" 2>/dev/null)" ]
 }
 
 # True when the index holds stage $2 of unmerged file $1 (2 is ours, 3 is theirs).
 # "git ls-files -u" prints "<mode> <blob> <stage><TAB><path>".
 has_stage() {
-    git ls-files -u -- "$1" 2>/dev/null | awk -v stage="$2" '$3 == stage { found = 1 } END { exit !found }'
+    git_path ls-files -u -- "$1" 2>/dev/null | awk -v stage="$2" '$3 == stage { found = 1 } END { exit !found }'
 }
 
 # True when neither side of the unmerged file $1 deleted it.
@@ -468,17 +475,17 @@ take_whole_side() {
     [ "$strategy" = ours ] || stage=3
 
     if has_stage "$file" "$stage"; then
-        git checkout "--$strategy" -- "$file" || die "Could not check out the '$strategy' version of: $file"
-        git add -- "$file" || die "Could not stage: $file"
+        git_path checkout "--$strategy" -- "$file" || die "Could not check out the '$strategy' version of: $file"
+        git_path add -- "$file" || die "Could not stage: $file"
     else
-        git rm -q -- "$file" >&2 || die "Could not remove: $file"
+        git_path rm -q -- "$file" >&2 || die "Could not remove: $file"
         log_info "Deleted, as on the '$strategy' side: $file"
     fi
 }
 
 # True when Git knows path $1: it exists, or the index has it.
 path_known() {
-    [ -e "$1" ] || [ -L "$1" ] || [ -n "$(git ls-files -- "$1" 2>/dev/null)" ]
+    [ -e "$1" ] || [ -L "$1" ] || [ -n "$(git_path ls-files -- "$1" 2>/dev/null)" ]
 }
 
 # Paths are printed relative to the repository root but typed relative to the
@@ -528,7 +535,7 @@ staged_findings() {
         meta=${meta% *}
         blobs+=("${meta##* }")
         paths+=("$file")
-    done < <(git diff --cached --raw -z --no-abbrev --no-renames --diff-filter=ACM)
+    done < <(git_plain diff --cached --raw -z --no-abbrev --no-renames --diff-filter=ACM)
 
     if [ "${#paths[@]}" -gt 0 ]; then
         while IFS= read -r size; do
@@ -605,7 +612,7 @@ detect_conventions() {
     fi
 
     local subjects total conventional emoji types scopes
-    subjects=$(git log --no-merges --format='%s' -50 2>/dev/null || true)
+    subjects=$(git_plain log --no-merges --format='%s' -50 2>/dev/null || true)
     total=$(printf '%s' "$subjects" | grep -c '' || true)
 
     printf '%s\n' "Conventions:"
@@ -699,7 +706,7 @@ cmd_commit_context() {
     printf '\n'
     detect_conventions
     local recent
-    recent=$(git log --format='%s' -10 2>/dev/null || true)
+    recent=$(git_plain log --format='%s' -10 2>/dev/null || true)
     if [ -n "$recent" ]; then
         printf '\n%s\n%s\n' "Recent commit subjects (match their style):" "$recent"
     fi
@@ -807,10 +814,10 @@ cmd_branch_context() {
     merge_base=$(git merge-base "$base" HEAD 2>/dev/null) || die "No common history between $base and HEAD."
 
     local commits
-    commits=$(git log --no-merges --reverse --format='- %h %s' "$merge_base..HEAD")
+    commits=$(git_plain log --no-merges --reverse --format='- %h %s' "$merge_base..HEAD")
     [ -n "$commits" ] || die "No commits on this branch since $base."
 
-    if ! git diff --quiet || ! git diff --cached --quiet; then
+    if ! git_plain diff --quiet || ! git_plain diff --cached --quiet; then
         log_warn "Uncommitted changes are not part of the branch context."
     fi
     if ! git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
@@ -825,7 +832,7 @@ cmd_branch_context() {
     # awk caps the output itself and reads git's output to the end: piping into
     # head would kill the pipeline (SIGPIPE under pipefail) on long bodies.
     local bodies
-    bodies=$(git log --no-merges --reverse --format='@@git-pilot@@%h %s%n%b' "$merge_base..HEAD" |
+    bodies=$(git_plain log --no-merges --reverse --format='@@git-pilot@@%h %s%n%b' "$merge_base..HEAD" |
         awk 'function emit(line) { if (count++ < 80) print line }
              /^@@git-pilot@@/ { header = substr($0, 14); printed = 0; next }
              NF { if (!printed) { emit(header); printed = 1 } emit("  " $0) }
@@ -956,7 +963,7 @@ cmd_commit() {
     [ -n "$(printf '%s' "$message" | tr -d '[:space:]')" ] || die "Commit message is empty."
 
     require_no_conflicts
-    if git diff --cached --quiet && [ ! -f "$(git_dir)/MERGE_HEAD" ]; then
+    if git_plain diff --cached --quiet && [ ! -f "$(git_dir)/MERGE_HEAD" ]; then
         die "No staged changes found. Stage your changes first with 'git add'."
     fi
 
@@ -1012,12 +1019,20 @@ cmd_take() {
     # Check every file before changing any: a file that is not in conflict
     # would otherwise be staged as it is and reported as resolved.
     # A refusal therefore leaves every file as it was.
-    local args=("$@") files=() whole=() arg file i
+    local args=("$@") files=() whole=() arg file i leftover="" name
     for arg in "$@"; do
         file=$(resolve_path "$arg")
+        [ ! -d "$file" ] || die "take resolves files, not directories: $arg"
         if ! is_unmerged "$file"; then
             [ -f "$file" ] || die "File not found: $arg"
-            file_has_markers "$file" || die "Not in conflict, nothing to resolve: $arg"
+            # Already staged but with markers left in it: only markers that a
+            # resolution left behind count, not a committed file that documents them.
+            [ -n "$leftover" ] || leftover=$(leftover_marker_files) ||
+                die "Could not scan the changes for conflict markers."
+            name=$(git_path ls-files --full-name -- "$file" 2>/dev/null || true)
+            if [ -z "$name" ] || ! printf '%s\n' "$leftover" | grep -Fxq -- "$name"; then
+                die "Not in conflict, nothing to resolve: $arg"
+            fi
             whole+=(false)
         elif ! has_both_sides "$file" || [ ! -f "$file" ] || ! file_has_markers "$file"; then
             # Deleted on one side, binary, or otherwise without markers to edit:
@@ -1038,7 +1053,7 @@ cmd_take() {
             take_whole_side "$strategy" "$file"
         else
             "resolve_keep_$strategy" "$file"
-            git add -- "$file" || die "Could not stage: ${args[$i]}"
+            git_path add -- "$file" || die "Could not stage: ${args[$i]}"
         fi
         log_success "Resolved ($strategy): ${args[$i]}"
     done
@@ -1065,7 +1080,7 @@ cmd_mark_resolved() {
     [ "$failed" = false ] || exit "$EXIT_CONFLICTS"
 
     for i in "${!files[@]}"; do
-        git add -A -- "${files[$i]}" || die "Could not stage: ${args[$i]}"
+        git_path add -A -- "${files[$i]}" || die "Could not stage: ${args[$i]}"
         log_success "Staged: ${args[$i]}"
     done
 }
