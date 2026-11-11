@@ -254,6 +254,16 @@ run "$nb" take ours conflict.txt
 assert_eq "take refuses a file with NUL bytes" "$RC" "1"
 assert_contains "the NUL refusal is explained" "$ERR" "NUL bytes"
 
+# NUL bytes in an already-staged leftover are refused too. Past the first 8000
+# bytes, so that Git still diffs the file as text and sees the markers.
+c=$(conflicted_repo nul-staged)
+{ awk 'BEGIN { for (i = 0; i < 300; i++) print "padding line " i " so that the NUL comes late" }'
+  printf 'line 1\n<<<<<<< HEAD\nours\000x\n=======\ntheirs\n>>>>>>> other\nline 3\n'; } > "$c/conflict.txt"
+git -C "$c" add conflict.txt
+run "$c" take ours conflict.txt
+assert_eq "take refuses an already-staged file with NUL bytes" "$RC" "1"
+assert_contains "the staged NUL refusal is explained" "$ERR" "NUL bytes"
+
 # A staged leftover with no other side to check against (after "git stash pop").
 sp=$(new_repo stash-pop)
 printf '%s\n' "a" > "$sp/p.txt"
@@ -271,6 +281,67 @@ theirs_blob=$(git -C "$ur" ls-files -u -- conflict.txt | awk '$3 == 3 { print $2
 rm -f "$ur/.git/objects/${theirs_blob:0:2}/${theirs_blob:2}"
 run "$ur" take ours conflict.txt
 assert_eq "take refuses when a version of the file cannot be read" "$RC" "1"
+
+# Large files: the marker check must read the whole file, whatever its size.
+lg=$(new_repo large-conflict)
+awk 'BEGIN { for (i = 1; i <= 40000; i++) print i " filler filler filler filler" }' > "$TEST_DIR/pad.txt"
+{ echo "top"; cat "$TEST_DIR/pad.txt"; echo "end"; } > "$lg/f.txt"
+git -C "$lg" add f.txt
+git -C "$lg" commit -q -m "feat: add f"
+git -C "$lg" checkout -q -b other
+{ echo "top theirs"; cat "$TEST_DIR/pad.txt"; echo "end theirs"; } > "$lg/f.txt"
+git -C "$lg" commit -q -am "feat: their f"
+git -C "$lg" checkout -q main
+{ echo "top ours"; cat "$TEST_DIR/pad.txt"; echo "end"; } > "$lg/f.txt"
+git -C "$lg" commit -q -am "feat: our f"
+git -C "$lg" merge -q other >/dev/null 2>&1 || true
+run "$lg" take ours f.txt
+assert_eq "take ours on a 1 MB file keeps our first line" "$(head -n 1 "$lg/f.txt")" "top ours"
+assert_eq "take ours on a 1 MB file keeps their clean change" "$(tail -n 1 "$lg/f.txt")" "end theirs"
+
+# Criss-cross merge: Git builds a virtual base with nested markers of its own.
+cc=$(new_repo criss-cross)
+printf '%s\n' "l1" "l2" "l3" > "$cc/f.txt"
+git -C "$cc" add f.txt
+git -C "$cc" commit -q -m "feat: base"
+git -C "$cc" checkout -q -b A
+printf '%s\n' "l1" "A" "l3" > "$cc/f.txt"
+git -C "$cc" commit -q -am "feat: A"
+git -C "$cc" checkout -q -b B main
+printf '%s\n' "l1" "B" "l3" > "$cc/f.txt"
+git -C "$cc" commit -q -am "feat: B"
+git -C "$cc" checkout -q A
+git -C "$cc" merge -q -s ours B -m "Merge B, keep A" >/dev/null 2>&1
+git -C "$cc" checkout -q B
+git -C "$cc" merge -q -s ours A~1 -m "Merge A, keep B" >/dev/null 2>&1
+printf '%s\n' "l1" "B2" "l3" > "$cc/f.txt"
+git -C "$cc" commit -q -am "feat: B2"
+git -C "$cc" checkout -q A
+printf '%s\n' "l1" "A2" "l3" > "$cc/f.txt"
+git -C "$cc" commit -q -am "feat: A2"
+git -C "$cc" merge -q B >/dev/null 2>&1 || true
+run "$cc" take theirs f.txt
+assert_eq "take resolves a criss-cross merge" "$(cat "$cc/f.txt")" $'l1\nB2\nl3'
+
+# A hunk at the end of the file ends the way the kept side ends.
+eof=$(new_repo hunk-at-eof)
+printf 'one\nbase' > "$eof/e.txt"
+git -C "$eof" add e.txt
+git -C "$eof" commit -q -m "feat: add e"
+git -C "$eof" checkout -q -b other
+printf 'one\ntheirs' > "$eof/e.txt"
+git -C "$eof" commit -q -am "feat: their e"
+git -C "$eof" checkout -q main
+printf 'one\nours\n' > "$eof/e.txt"
+git -C "$eof" commit -q -am "feat: our e"
+git -C "$eof" merge -q other >/dev/null 2>&1 || true
+cp "$eof/e.txt" "$TEST_DIR/e.txt"
+run "$eof" take theirs e.txt
+assert_eq "a hunk at EOF takes their missing final newline" "$(od -An -c "$eof/e.txt" | tr -d ' \n')" 'one\ntheirs'
+cp "$TEST_DIR/e.txt" "$eof/e.txt"
+git -C "$eof" checkout -q -m e.txt
+run "$eof" take ours e.txt
+assert_eq "a hunk at EOF keeps our final newline" "$(od -An -c "$eof/e.txt" | tr -d ' \n')" 'one\nours\n'
 
 crlf=$(new_repo crlf)
 printf 'one\r\nbase\r\nthree\r\n' > "$crlf/win.txt"

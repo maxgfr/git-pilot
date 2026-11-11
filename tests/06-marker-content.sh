@@ -22,6 +22,20 @@ assert_eq "commit refuses a leftover closing marker (exit 2)" "$RC" "2"
 git -C "$fx" rm -q --cached half.txt
 rm "$fx/half.txt"
 
+# Lines of more than 7 marker characters are content, unless the file's
+# conflict-marker-size says that is the marker length.
+lm=$(new_repo long-marker-lines)
+printf '%s\n' "<<<<<<<<<<<<<<<<<<<<" "section" ">>>>>>>>>>>>>>>>>>>>" > "$lm/art.txt"
+git -C "$lm" add art.txt
+run "$lm" commit -m "docs: add separators" --dry-run
+assert_eq "long separator lines are not taken for markers" "$RC" "0"
+git -C "$lm" commit -q -m "docs: add separators"
+printf '%s\n' "short.txt conflict-marker-size=3" > "$lm/.gitattributes"
+printf '%s\n' "<<< HEAD" "a" "===" "b" ">>> other" > "$lm/short.txt"
+git -C "$lm" add -A
+run "$lm" commit -m "feat: short" --dry-run
+assert_eq "markers of a declared size of 3 are caught (exit 2)" "$RC" "2"
+
 # A diff filter that fails must not blind the checks.
 bf=$(new_repo broken-filters)
 printf '%s\n' "*.dat diff=dat" > "$bf/.gitattributes"
