@@ -1123,13 +1123,22 @@ cmd_push() {
                 ! git config "branch.$branch.merge" "refs/heads/$branch"; then
                 die "Push rejected, and the upstream $remote/$branch could not be configured."
             fi
-            # Best effort, so that @{upstream} resolves right away; 'rebase start'
-            # fetches the branch itself if this fails.
+            # Best effort, for the remote-tracking ref (status, branch-context).
+            # 'rebase start' fetches the branch itself, so a failure here does
+            # not matter; in a single-branch clone 'git fetch' will not keep
+            # that ref up to date, and status shows no upstream line.
             git fetch -q "$remote" "+refs/heads/$branch:refs/remotes/$remote/$branch" >/dev/null 2>&1 || true
             log_info "Now tracking $remote/$branch."
         fi
         log_error "Push rejected: the remote has commits you do not have. Run 'rebase start', then 'push' again."
         exit "$EXIT_PUSH_REJECTED"
+    fi
+    # push.default=matching pushes other branches too: when only those failed,
+    # the current branch is on the remote and this command did its job.
+    if printf '%s\n' "$verdict" | awk -F'\t' -v src="refs/heads/$branch:" '
+        $1 == "=" && index($2, src) == 1 { found = 1 } END { exit !found }'; then
+        log_warn "The current branch is pushed, but other branches were rejected (push.default=$(git config --get push.default || echo simple)); see git's message above."
+        return 0
     fi
     die "git push failed (see git's message above), and not because the current branch is behind its remote: a rebase will not help."
 }

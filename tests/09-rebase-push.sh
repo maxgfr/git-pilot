@@ -143,7 +143,8 @@ git -C "$single" checkout -q shared-topic
 git -C "$single" commit -q --allow-empty -m "feat: topic after rebase"
 git -C "$single" config push.default matching
 run "$single" push
-assert_eq "a rejection of another branch exits 1, not 4" "$RC" "1"
+assert_eq "a rejection of another branch only is a success, not 4" "$RC" "0"
+assert_contains "the rejection of the other branch is reported" "$ERR" "other branches were rejected"
 assert_eq "the current branch was still pushed" "$(git -C "$remote" rev-parse refs/heads/shared-topic)" "$(git -C "$single" rev-parse HEAD)"
 
 # A failing pre-push hook runs once, not twice.
