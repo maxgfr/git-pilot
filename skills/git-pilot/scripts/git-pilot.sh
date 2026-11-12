@@ -1477,7 +1477,7 @@ quick_message() {
 # Fails, with a warning, when the command is missing, fails, or answers with
 # something that is not a Conventional Commit of the requested type.
 ai_message() {
-    local type="$1" cmd="${GIT_PILOT_AI_CMD:-}" context reply
+    local type="$1" cmd="${GIT_PILOT_AI_CMD:-}" context prompt reply
     if [ -z "$cmd" ]; then
         if ! command -v claude >/dev/null 2>&1; then
             log_warn "The 'claude' CLI is not installed (set GIT_PILOT_AI_CMD to use another command)."
@@ -1492,7 +1492,9 @@ ai_message() {
     }
 
     log_info "Asking the model for a '$type' message..."
-    reply=$({
+    # A here-string, not a pipe: a command that stops reading early (head,
+    # grep -q) would SIGPIPE the writer and fail the pipeline under pipefail.
+    prompt=$(
         cat <<EOF
 Write the Git commit message for the staged changes below.
 - Use the Conventional Commits format. The type MUST be '$type' (e.g. "$type: <description>"); add a scope only if the recent subjects use them.
@@ -1502,7 +1504,8 @@ Write the Git commit message for the staged changes below.
 
 EOF
         printf '%s\n' "$context"
-    } | sh -c "$cmd") || {
+    )
+    reply=$(sh -c "$cmd" <<<"$prompt") || {
         log_warn "The AI command failed: $cmd"
         return 1
     }
