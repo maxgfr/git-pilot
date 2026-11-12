@@ -4,7 +4,8 @@
 #  git-pilot
 #  Deterministic Git helpers for the git-pilot agent skill.
 #  The agent running the skill writes commit messages and resolves conflicts;
-#  this script never calls a model. stdout is data, stderr is diagnostics.
+#  this script never calls a model, except '<type> --ai', which runs the
+#  user's command. stdout is data, stderr is diagnostics.
 # ==============================================================================
 
 set -euo pipefail
@@ -78,6 +79,14 @@ Commit:
   commit (-F <file|-> | -m <msg>) [--dry-run] [--push] [--allow-flagged]
                                       Commit the staged changes with the given message
 
+Quick commit:
+  <type> [--ai] [--dry-run] [--no-push] [--allow-flagged]
+                                      Stage all changes (unless some are staged), commit them as
+                                      '<type>: ...' and push. The message names the files, or is
+                                      written by GIT_PILOT_AI_CMD with --ai. <type> is one of
+                                      feat fix docs style refactor perf test build ci chore revert,
+                                      a type in GIT_PILOT_TYPES, or one the recent history uses
+
 Pull request:
   branch-context [--base <ref>]       Print the branch's commits, diff stat and diff against its base
                                       (default: origin/HEAD, then main or master)
@@ -108,6 +117,9 @@ Environment:
   GIT_PILOT_MAX_FILE_SIZE             Staged file size flagged as large, in bytes (default 5242880)
   GIT_PILOT_GITLEAKS                  0 to skip gitleaks, which also scans staged changes when installed
   GIT_PILOT_GITLEAKS_TIMEOUT          Seconds gitleaks may run before it is stopped (default 60)
+  GIT_PILOT_TYPES                     Extra quick commit types, space-separated (e.g. "wip deps")
+  GIT_PILOT_AI_CMD                    Command run by '<type> --ai': reads the prompt on stdin, prints the
+                                      message (default: the claude CLI with the haiku model)
   NO_COLOR                            Set to disable colors in diagnostics
   The sizes and the timeout must be non-negative integers; any other value is an error.
 EOF
@@ -1375,6 +1387,227 @@ cmd_commit() {
     fi
 }
 
+# ==============================================================================
+#  Quick commit: git-pilot <type>
+# ==============================================================================
+
+QUICK_TYPES="feat fix docs style refactor perf test build ci chore revert"
+
+# A quick commit type: a standard one, one listed in GIT_PILOT_TYPES, or one the
+# repository's recent history already uses. Any other word stays an unknown
+# command, so a typo never commits and pushes.
+is_quick_type() {
+    local type="$1" subjects
+    case "$type" in
+        ''|*[!a-z]*) return 1 ;;
+    esac
+    case " $QUICK_TYPES ${GIT_PILOT_TYPES:-} " in
+        *" $type "*) return 0 ;;
+    esac
+    subjects=$(git_plain log --no-merges --format='%s' -200 2>/dev/null || true)
+    # grep -c reads everything: with -q, an early exit could fail the pipe.
+    [ "$(printf '%s\n' "$subjects" | grep -cE "^$type(\([^)]*\))?!?: " || true)" -gt 0 ]
+}
+
+# Usage: quick_message <type>
+# A one-line Conventional Commit subject naming the staged files, e.g.
+# "fix: update script.sh and SKILL.md" or "chore: update a.sh, b.sh and 4 more files".
+quick_message() {
+    local type="$1" status path kind verb="" name count=0 uncovered=0 i found
+    # Up to three distinct base names, and how many staged files each one covers.
+    local names=() covers=()
+    while IFS= read -r -d '' status; do
+        IFS= read -r -d '' path || break
+        case "$status" in
+            R*|C*) IFS= read -r -d '' path || break ;;
+        esac
+        count=$((count + 1))
+        case "$status" in
+            A*|C*) kind=add ;;
+            D*) kind=remove ;;
+            R*) kind=rename ;;
+            *) kind=update ;;
+        esac
+        if [ -z "$verb" ]; then verb="$kind"; elif [ "$verb" != "$kind" ]; then verb=update; fi
+        name="${path##*/}"
+        found=false
+        i=0
+        while [ "$i" -lt "${#names[@]}" ]; do
+            if [ "${names[i]}" = "$name" ]; then
+                covers[i]=$((covers[i] + 1))
+                found=true
+                break
+            fi
+            i=$((i + 1))
+        done
+        if [ "$found" = false ]; then
+            if [ "${#names[@]}" -lt 3 ]; then
+                names+=("$name")
+                covers+=(1)
+            else
+                uncovered=$((uncovered + 1))
+            fi
+        fi
+    done < <(git_plain diff --cached --name-status -z -M)
+    [ "$count" -gt 0 ] || return 1
+
+    local plural=files
+    [ "$count" -gt 1 ] || plural='file'
+    local fallback="$type: $verb $count $plural" subject
+    if [ "$uncovered" -eq 0 ]; then
+        case "${#names[@]}" in
+            1) subject="$type: $verb ${names[0]}" ;;
+            2) subject="$type: $verb ${names[0]} and ${names[1]}" ;;
+            *) subject="$type: $verb ${names[0]}, ${names[1]} and ${names[2]}" ;;
+        esac
+    else
+        local more=$((count - covers[0] - covers[1]))
+        subject="$type: $verb ${names[0]}, ${names[1]} and $more more files"
+    fi
+    # Long names (or names with control characters) give the plain count instead.
+    if [ "${#subject}" -gt 72 ] || needs_quoting "$subject"; then
+        subject="$fallback"
+    fi
+    printf '%s\n' "$subject"
+}
+
+# Usage: ai_message <type>
+# A commit message written by the command in GIT_PILOT_AI_CMD (default: the
+# Claude Code CLI), which reads the prompt on stdin and prints the message.
+# Fails, with a warning, when the command is missing, fails, or answers with
+# something that is not a Conventional Commit of the requested type.
+ai_message() {
+    local type="$1" cmd="${GIT_PILOT_AI_CMD:-}" context reply
+    if [ -z "$cmd" ]; then
+        if ! command -v claude >/dev/null 2>&1; then
+            log_warn "The 'claude' CLI is not installed (set GIT_PILOT_AI_CMD to use another command)."
+            return 1
+        fi
+        # Unset Claude Code's session variables so it also runs from inside a session.
+        cmd='env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SSE_PORT claude -p --model haiku --no-session-persistence'
+    fi
+    context=$(cmd_commit_context 2>/dev/null) || {
+        log_warn "Could not read the staged changes for the model."
+        return 1
+    }
+
+    log_info "Asking the model for a '$type' message..."
+    reply=$({
+        cat <<EOF
+Write the Git commit message for the staged changes below.
+- Use the Conventional Commits format. The type MUST be '$type' (e.g. "$type: <description>"); add a scope only if the recent subjects use them.
+- Subject: imperative mood, lowercase after the colon, no trailing period, at most 72 characters.
+- Add a short body (after a blank line) only if the subject cannot say why the change was made.
+- Output only the commit message: no code fences, no quotes, no explanation.
+
+EOF
+        printf '%s\n' "$context"
+    } | sh -c "$cmd") || {
+        log_warn "The AI command failed: $cmd"
+        return 1
+    }
+    # Drop code fences, trailing spaces and blank lines around the message.
+    reply=$(printf '%s\n' "$reply" | awk '
+        /^[[:space:]]*```/ { next }
+        { sub(/[[:space:]]+$/, ""); line[++n] = $0 }
+        END {
+            s = 1; while (s <= n && line[s] == "") s++
+            e = n; while (e >= s && line[e] == "") e--
+            for (i = s; i <= e; i++) print line[i]
+        }')
+    if ! printf '%s\n' "$reply" | head -n 1 | grep -qE "^$type(\([^)]*\))?!?: [^[:space:]]"; then
+        log_warn "The AI command did not answer with a '$type: ...' subject."
+        return 1
+    fi
+    printf '%s\n' "$reply"
+}
+
+# Usage: cmd_quick <type> [--ai] [--dry-run] [--no-push] [--allow-flagged]
+# Stage everything (unless something is already staged), commit with a
+# Conventional Commit of the given type, then push.
+cmd_quick() {
+    local type="$1" ai=false dry_run=false push=true allow_flagged=false
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --ai) ai=true; shift ;;
+            -d|--dry-run) dry_run=true; shift ;;
+            --no-push) push=false; shift ;;
+            --allow-flagged) allow_flagged=true; shift ;;
+            *) die "Unknown option for $type: $1" ;;
+        esac
+    done
+
+    require_no_conflicts
+    [ ! -f "$(git_dir)/MERGE_HEAD" ] || die "A merge is in progress: finish it with 'commit'."
+    ! rebase_in_progress || die "A rebase is in progress: finish it with 'rebase continue'."
+    if [ "$push" = true ] && [ -z "$(git branch --show-current 2>/dev/null || true)" ]; then
+        die "Cannot push a detached HEAD: check out a branch first, or pass --no-push."
+    fi
+
+    if git_plain diff --cached --quiet; then
+        if [ "$dry_run" = true ]; then
+            # Preview what 'git add -A' would stage, without touching the index.
+            local index rc=0
+            index=$(mktemp "${TMPDIR:-/tmp}/git-pilot-index.XXXXXX") || die "Could not create a temporary index."
+            # No index yet (nothing ever staged): git add creates one.
+            cp "$(git rev-parse --git-path index)" "$index" 2>/dev/null || rm -f "$index"
+            (
+                export GIT_INDEX_FILE="$index"
+                git add -A || die "git add failed."
+                cmd_quick_preview "$type" "$ai" "$allow_flagged"
+            ) || rc=$?
+            rm -f "$index"
+            return "$rc"
+        fi
+        git add -A || die "git add failed."
+        git_plain diff --cached --quiet && die "Nothing to commit: the working tree is clean."
+        log_info "Staged all changes."
+    else
+        log_info "Committing the staged changes only."
+    fi
+    if [ "$dry_run" = true ]; then
+        cmd_quick_preview "$type" "$ai" "$allow_flagged"
+        return
+    fi
+
+    local message
+    message=$(quick_commit_message "$type" "$ai" "$allow_flagged") || exit $?
+    printf '%s\n' "$message" | git commit -F - >&2 || die "git commit failed."
+    git rev-parse HEAD
+    log_success "Committed: ${message%%$'\n'*}"
+
+    if [ "$push" = true ]; then
+        cmd_push
+    fi
+}
+
+# Usage: quick_commit_message <type> <ai> <allow_flagged>
+# Check the staged files, then print the message for them.
+quick_commit_message() {
+    local type="$1" ai="$2" allow_flagged="$3" findings
+    findings=$(staged_findings) || die "Could not check the staged changes for secrets and large files."
+    if [ -n "$findings" ] && [ "$allow_flagged" != true ]; then
+        log_error "Refusing to commit flagged files:"
+        printf '%s\n' "$findings" | sed 's/^/  /' >&2
+        log_warn "Unstage them, or pass --allow-flagged once you have checked they are safe."
+        exit "$EXIT_FLAGGED"
+    fi
+    if [ "$ai" = true ]; then
+        ai_message "$type" && return 0
+        log_warn "Falling back to a message built from the file names."
+    fi
+    quick_message "$type" || die "Nothing to commit: the working tree is clean."
+}
+
+# Print the message a quick commit would use, without committing.
+cmd_quick_preview() {
+    local message
+    message=$(quick_commit_message "$@") || exit $?
+    printf '%s\n' "$message"
+    log_info "Dry run — no commit created."
+}
+
 cmd_conflicts() {
     [ $# -eq 0 ] || die "conflicts takes no arguments."
     conflicted_files
@@ -1572,7 +1805,15 @@ main() {
         rebase)         cmd_rebase "$@" ;;
         push)           cmd_push "$@" ;;
         *)
+            if is_quick_type "$command"; then
+                cmd_quick "$command" "$@"
+                return
+            fi
             log_error "Unknown command: $command"
+            case "$command" in
+                *[!a-z]*) ;;
+                *) log_warn "For a quick commit of type '$command', add it to GIT_PILOT_TYPES." ;;
+            esac
             print_usage >&2
             exit "$EXIT_ERROR"
             ;;

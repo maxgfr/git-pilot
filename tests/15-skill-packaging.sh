@@ -21,9 +21,17 @@ while IFS= read -r cmd; do
     assert_contains "SKILL.md command '$cmd' exists in --help" "$OUT" "$cmd"
 done < <(grep -oE 'git-pilot\.sh [a-z-]+' "$skill_md" | awk '{print $2}' | sort -u)
 
-if grep -nE 'claude -p|codex exec|api\.(openai|anthropic|mistral)|generativelanguage' "$GIT_PILOT" "$skill_md" >/dev/null; then
-    fail "no model calls in the CLI or the skill"
+# The one model call is ai_message, behind '<type> --ai'; the skill never makes one.
+model_call='claude -p|codex exec|api\.(openai|anthropic|mistral)|generativelanguage'
+if awk '/^ai_message\(\) \{/ { skip = 1 } !skip { print } skip && /^\}/ { skip = 0 }' "$GIT_PILOT" | grep -qE "$model_call" ||
+    grep -qE "$model_call" "$skill_md"; then
+    fail "no model calls in the CLI (outside '<type> --ai') or the skill"
 else
-    pass "no model calls in the CLI or the skill"
+    pass "no model calls in the CLI (outside '<type> --ai') or the skill"
+fi
+if awk '/^ai_message\(\) \{/ { skip = 1 } skip { print } skip && /^\}/ { skip = 0 }' "$GIT_PILOT" | grep -qE "$model_call"; then
+    pass "'<type> --ai' calls the claude CLI by default"
+else
+    fail "'<type> --ai' calls the claude CLI by default"
 fi
 

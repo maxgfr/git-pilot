@@ -7,7 +7,7 @@ git-pilot ships two things that must stay in sync:
 
 ## Working agreement
 
-- The CLI never calls a model. Commit messages and conflict resolutions are written by the agent running the skill; keep that guidance in `SKILL.md`.
+- The CLI never calls a model, except the opt-in `<type> --ai` quick commit, which runs the user's own command (`GIT_PILOT_AI_CMD`, Claude Code by default) inside `ai_message`. The skill never uses it. Commit messages and conflict resolutions are written by the agent running the skill; keep that guidance in `SKILL.md`.
 - Keep `script.sh` compatible with Bash on macOS and Ubuntu.
 - Treat stdout as generated data and stderr as user-facing diagnostics. Keep subcommands non-interactive and keep their exit codes stable (documented in `--help` and `SKILL.md`).
 - Preserve confirmation and dry-run boundaries around Git mutations, in the CLI and in the skill instructions.

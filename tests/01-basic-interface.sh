@@ -7,7 +7,7 @@ run "$TEST_DIR" --version
 assert_contains "version prints to stdout" "$OUT" "git-pilot v"
 
 run "$TEST_DIR" --help
-for cmd in status commit-context commit branch-context conflicts merge-context take mark-resolved "rebase start" "rebase continue" "rebase abort" push; do
+for cmd in status commit-context commit "<type>" branch-context conflicts merge-context take mark-resolved "rebase start" "rebase continue" "rebase abort" push; do
     assert_contains "help lists '$cmd'" "$OUT" "$cmd"
 done
 

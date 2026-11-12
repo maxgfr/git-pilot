@@ -31,6 +31,9 @@ ahead, `5` staged files flagged as secrets or large files.
 - Only stage everything (`-a`) when the user asks for it or nothing is staged
   and they asked to commit "all" their changes.
 - Push only when the user asks.
+- Do not use the quick commit (`git-pilot.sh <type>`, e.g. `fix`, or its
+  `--ai`): it is for the user committing without an agent. You write the
+  message yourself and commit with `commit`.
 - Never commit files flagged as secrets or large files without telling the
   user what was flagged and getting an explicit go-ahead.
 

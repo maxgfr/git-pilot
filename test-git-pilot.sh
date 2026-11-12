@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the git-pilot CLI, run through its public interface against real
-# temporary repositories. No model is involved: the CLI never calls one.
+# temporary repositories. No model is involved: '<type> --ai' runs a stand-in command.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
